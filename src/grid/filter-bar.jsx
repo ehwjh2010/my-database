@@ -1,78 +1,94 @@
-import { useState } from "react";
-import { Icon } from "../ui/icon.jsx";
-import { FILTER_OPS } from "../lib/sql/select-builder.js";
+import { useRef, useState } from "react";
 
-function isUnary(opId) {
-    const op = FILTER_OPS.find((o) => o.id === opId);
-    return Boolean(op && op.unary);
+const MIN_WIDTH = 120;
+const SEPARATOR_WIDTH = 9;
+
+function clampRatio(element, value) {
+    const available = Math.max(1, element.clientWidth - SEPARATOR_WIDTH);
+    const minimum = Math.min(50, MIN_WIDTH / available * 100);
+    return Math.max(minimum, Math.min(100 - minimum, value));
 }
 
-export function FilterBar({ columns, filters, rawWhere, onApply }) {
-    const [rows, setRows] = useState(() => filters.map((f) => ({ ...f })));
-    const [raw, setRaw] = useState(rawWhere || "");
+export function FilterBar({ rawWhere, rawOrderBy, initialRatio, onWhereChange, onOrderByChange, onApply, onRatioChange }) {
+    const bar = useRef(null);
+    const dragging = useRef(false);
+    const ratioValue = useRef(initialRatio);
+    const [ratio, setRatio] = useState(initialRatio);
 
-    const patchRow = (index, patch) => setRows((prev) => prev.map((r, i) => (i === index ? { ...r, ...patch } : r)));
-    const removeRow = (index) => setRows((prev) => prev.filter((_, i) => i !== index));
-    const addRow = () => setRows((prev) => [...prev, { column: "", op: FILTER_OPS[0].id, value: "" }]);
-
-    const apply = () =>
-        onApply({
-            filters: rows.filter((r) => r.column).map((r) => (isUnary(r.op) ? { ...r, value: "" } : r)),
-            rawWhere: raw,
-        });
+    const updateRatio = (value) => {
+        const next = clampRatio(bar.current, value);
+        ratioValue.current = next;
+        setRatio(next);
+        return next;
+    };
+    const resize = (clientX) => {
+        const bounds = bar.current.getBoundingClientRect();
+        const available = bounds.width - SEPARATOR_WIDTH;
+        updateRatio((clientX - bounds.left - SEPARATOR_WIDTH / 2) / available * 100);
+    };
+    const finishResize = (event) => {
+        if (!dragging.current)
+            return;
+        if (event.type === "pointerup")
+            resize(event.clientX);
+        dragging.current = false;
+        if (event.currentTarget.hasPointerCapture?.(event.pointerId))
+            event.currentTarget.releasePointerCapture(event.pointerId);
+        onRatioChange(ratioValue.current);
+    };
+    const submitOnEnter = (event) => {
+        if (event.key === "Enter")
+            onApply();
+    };
 
     return (
-        <div className="flex flex-col">
-            <div className="search-bar" style={{ borderColor: "var(--muxy-border)" }}>
-                <button className="icon-btn" title="Add filter" onClick={addRow}>
-                    <Icon name="plus" />
-                </button>
-                <input
-                    type="text"
-                    className="mono search-bar-input"
-                    placeholder="raw WHERE (optional)"
-                    value={raw}
-                    onChange={(e) => setRaw(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") apply(); }}
-                />
-                <button className="btn btn-compact btn-primary" onClick={apply}>
-                    <Icon name="filter" />
-                    Apply
-                </button>
-            </div>
-            {rows.length ? (
-                <div className="flex flex-wrap items-center gap-[var(--s3)] px-[var(--s3)] py-[var(--s2)]">
-                    {rows.map((row, index) => (
-                        <div key={index} className="flex items-center gap-[var(--s2)]">
-                            <select value={row.column} onChange={(e) => patchRow(index, { column: e.target.value })}>
-                                <option value="">column</option>
-                                {columns.map((c) => (
-                                    <option key={c.name} value={c.name}>
-                                        {c.name}
-                                    </option>
-                                ))}
-                            </select>
-                            <select value={row.op} onChange={(e) => patchRow(index, { op: e.target.value })}>
-                                {FILTER_OPS.map((op) => (
-                                    <option key={op.id} value={op.id}>
-                                        {op.label}
-                                    </option>
-                                ))}
-                            </select>
-                            <input
-                                type="text"
-                                placeholder="value"
-                                value={row.value ?? ""}
-                                style={{ width: "120px", display: isUnary(row.op) ? "none" : "" }}
-                                onChange={(e) => patchRow(index, { value: e.target.value })}
-                            />
-                            <button className="icon-btn" title="Remove filter" onClick={() => removeRow(index)}>
-                                <Icon name="x" />
-                            </button>
-                        </div>
-                    ))}
-                </div>
-            ) : null}
+        <div
+            ref={bar}
+            className="search-bar data-query-bar"
+            style={{ gridTemplateColumns: `minmax(${MIN_WIDTH}px, ${ratio}fr) ${SEPARATOR_WIDTH}px minmax(${MIN_WIDTH}px, ${100 - ratio}fr)` }}
+        >
+            <input
+                type="text"
+                className="mono search-bar-input"
+                aria-label="WHERE"
+                placeholder="WHERE"
+                value={rawWhere}
+                onChange={(event) => onWhereChange(event.target.value)}
+                onKeyDown={submitOnEnter}
+            />
+            <div
+                className="query-separator"
+                role="separator"
+                aria-label="Resize WHERE and ORDER BY"
+                aria-orientation="vertical"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.round(ratio)}
+                tabIndex={0}
+                onPointerDown={(event) => {
+                    dragging.current = true;
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                    resize(event.clientX);
+                }}
+                onPointerMove={(event) => { if (dragging.current) resize(event.clientX); }}
+                onPointerUp={finishResize}
+                onPointerCancel={finishResize}
+                onKeyDown={(event) => {
+                    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight")
+                        return;
+                    event.preventDefault();
+                    onRatioChange(updateRatio(ratioValue.current + (event.key === "ArrowLeft" ? -2 : 2)));
+                }}
+            />
+            <input
+                type="text"
+                className="mono search-bar-input"
+                aria-label="ORDER BY"
+                placeholder="ORDER BY"
+                value={rawOrderBy}
+                onChange={(event) => onOrderByChange(event.target.value)}
+                onKeyDown={submitOnEnter}
+            />
         </div>
     );
 }

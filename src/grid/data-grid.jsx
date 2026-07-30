@@ -4,6 +4,7 @@ import { CellEditor } from "./cell-editor.jsx";
 import { ContextMenu } from "../ui/context-menu.jsx";
 import { InsertRows } from "./insert-rows.jsx";
 import { getEdit, isDeleted } from "./pending-changes.js";
+import { Icon } from "../ui/icon.jsx";
 
 function normalizeInput(value) {
     if (value === null)
@@ -13,7 +14,7 @@ function normalizeInput(value) {
     return String(value);
 }
 
-export function DataGrid({ page, changes, editable, onChange, editing, setEditing, onContextItems, onViewCell }) {
+export function DataGrid({ page, changes, editable, onChange, editing, setEditing, onContextItems, onViewCell, sortDirections, onSort }) {
     const { displayColumns, displayRows, keyValuesFor } = page;
     const [menu, setMenu] = useState(null);
 
@@ -55,18 +56,28 @@ export function DataGrid({ page, changes, editable, onChange, editing, setEditin
 
     return (
         <div className="grid-wrap">
-            <table className="grid-table">
+            <table className="grid-table data-grid-table">
                 <thead>
                     <tr>
                         {editable ? <th className="gutter" /> : null}
-                        {displayColumns.map((col) => (
-                            <th key={col.name} title={col.type || col.name}>
-                                {col.name}
-                                {col.type ? (
-                                    <span className="ml-[var(--s2)] font-normal text-muted-foreground">{col.type.toLowerCase()}</span>
-                                ) : null}
-                            </th>
-                        ))}
+                        {displayColumns.map((col) => {
+                            const direction = sortDirections.get(col.name);
+                            return (
+                                <th key={col.name} aria-sort={direction === "ASC" ? "ascending" : direction === "DESC" ? "descending" : "none"}>
+                                    <button type="button" className="sortable-header" title={col.type || col.name} onClick={() => onSort(col.name)}>
+                                        <span>{col.name}</span>
+                                        {col.type ? (
+                                            <span className="font-normal text-muted-foreground">{col.type.toLowerCase()}</span>
+                                        ) : null}
+                                        {direction ? (
+                                            <span className={`sort-arrow ${direction === "ASC" ? "sort-arrow-asc" : ""}`}>
+                                                <Icon name="chevronDown" size={12} />
+                                            </span>
+                                        ) : null}
+                                    </button>
+                                </th>
+                            );
+                        })}
                     </tr>
                 </thead>
                 <tbody>

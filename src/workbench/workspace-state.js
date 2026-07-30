@@ -64,7 +64,8 @@ export function isCurrentDataCount(session, request) {
         return false;
     const entry = session.registry.byId[request.ownership.workspaceId];
     return sameObjectRef(entry.ref, request.objectRef)
-        && session.workspaceOwners?.get(entry.key)?.dataCountRequest === request.countToken;
+        && session.workspaceOwners?.get(entry.key)?.dataCountRequest === request.countToken
+        && session.gridState?.get(entry.key)?.rawWhere === request.gridParams?.rawWhere;
 }
 
 export function objectCacheKey({ database, schema, table }) {

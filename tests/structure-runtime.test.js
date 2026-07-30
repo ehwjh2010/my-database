@@ -183,7 +183,7 @@ test("data reads and refreshes keep the structure snapshot and request identity 
     commitStructureSnapshot(session, structureRead, await loadStructureSnapshot(session, structureRead));
     const structureToken = session.workspaceOwners.get(key).structureRequest;
 
-    const dataRead = coordinator.initiateDataRead(workspaceId, { page: 0, sort: null, filters: [], rawWhere: "" });
+    const dataRead = coordinator.initiateDataRead(workspaceId, { page: 0, rawWhere: "", rawOrderBy: "" });
     assert.equal(dataRead.dataToken, 1);
     assert.equal(session.workspaceOwners.get(key).structureRequest, structureToken);
 

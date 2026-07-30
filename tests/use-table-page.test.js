@@ -5,7 +5,7 @@ import { dataRuntimeFor, nextDataRequest } from "../src/workbench/data-runtime.j
 import { cachedPageFor, loadTablePage, targetIsCurrent } from "../src/grid/use-table-page.js";
 
 const tableRef = Object.freeze({ database: "app", schema: "main", table: "orders" });
-const gridState = { page: 0, sort: null, filters: [], rawWhere: "", total: null };
+const gridState = { page: 0, rawWhere: "", rawOrderBy: '"id" DESC', total: null, querySplit: 50 };
 
 function sessionWithDriver(calls) {
     return {
@@ -57,6 +57,7 @@ test("loadTablePage uses the captured driver context for metadata and rows", asy
     assert.equal(calls.length, 2);
     assert.equal(calls[0].ctx.database, "app");
     assert.equal(calls[1].ctx.schema, "main");
+    assert.equal(calls[1].sql, 'SELECT * FROM "orders" ORDER BY "id" DESC LIMIT 2 OFFSET 0');
 });
 
 test("cached page requires matching grid revision and current request identity", () => {
@@ -68,7 +69,9 @@ test("cached page requires matching grid revision and current request identity",
     runtime.dataRevision = 2;
 
     assert.deepEqual(cachedPageFor(runtime, { ...gridState }, 2, 1, 4, runtime.generation, runtime.token), runtime.cache);
+    assert.deepEqual(cachedPageFor(runtime, { ...gridState, total: 10, querySplit: 70 }, 2, 1, 4, runtime.generation, runtime.token), runtime.cache);
     assert.equal(cachedPageFor(runtime, { ...gridState, page: 1 }, 2, 1, 4, runtime.generation, runtime.token), null);
+    assert.equal(cachedPageFor(runtime, { ...gridState, rawOrderBy: "id ASC" }, 2, 1, 4, runtime.generation, runtime.token), null);
     assert.equal(cachedPageFor(runtime, { ...gridState }, 1, 1, 4, runtime.generation, runtime.token), null);
 
     const request = { owner: runtime.owner, token: runtime.token, generation: runtime.generation, revision: runtime.revision, dataRevision: 2 };
@@ -90,15 +93,12 @@ test("targetIsCurrent rejects stale workspace and mismatched scopeEpoch", () => 
     const target = { workspaceKey: key, workspaceId: 1, workspaceGeneration: 1, scopeEpoch: 4, dataRevision: 2, gridState: { ...gridState } };
     assert.equal(targetIsCurrent(session, target, runtime, request), true);
 
-    // Mismatched workspace generation means reopened workspace
     const reopenedTarget = { workspaceKey: key, workspaceId: 1, workspaceGeneration: 99, scopeEpoch: 4, dataRevision: 2, gridState: { ...gridState } };
     assert.equal(targetIsCurrent(session, reopenedTarget, runtime, request), false);
 
-    // Mismatched scopeEpoch
     const scopeTarget = { workspaceKey: key, workspaceId: 1, workspaceGeneration: 1, scopeEpoch: 99, dataRevision: 2, gridState: { ...gridState } };
     assert.equal(targetIsCurrent(session, scopeTarget, runtime, request), false);
 
-    // Nonexistent workspace
     const missingTarget = { workspaceKey: key, workspaceId: 99, workspaceGeneration: 1, scopeEpoch: 4, dataRevision: 2, gridState: { ...gridState } };
     assert.equal(targetIsCurrent(session, missingTarget, runtime, request), false);
 });

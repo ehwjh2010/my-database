@@ -15,6 +15,7 @@ test("data runtime keeps independent cache, grid, changes, and request identity 
     const second = dataRuntimeFor(session, "app.public.customers", undefined, undefined, 2);
 
     first.gridState.page = 2;
+    first.gridState.querySplit = 65;
     first.cache = { rows: [[1]], metadata: { columns: ["id"] } };
     first.changes.inserts.push({ id: 1 });
     first.token = 4;
@@ -22,6 +23,8 @@ test("data runtime keeps independent cache, grid, changes, and request identity 
     assert.notEqual(first, second);
     assert.equal(first.gridState.page, 2);
     assert.equal(second.gridState.page, 0);
+    assert.equal(first.gridState.querySplit, 65);
+    assert.equal(second.gridState.querySplit, 50);
     assert.equal(first.changes.inserts.length, 1);
     assert.equal(isCurrentDataRuntime(first, 1, 3, 3, 4), true);
     assert.equal(isCurrentDataRuntime(first, 1, 3, 3, 5), false);
@@ -33,7 +36,7 @@ test("data runtime keeps independent cache, grid, changes, and request identity 
 
 test("createDataRuntime starts with non-persistent empty Data state", () => {
     const runtime = createDataRuntime(null, 0, 7);
-    assert.deepEqual(runtime.gridState, { page: 0, sort: null, filters: [], rawWhere: "", total: null });
+    assert.deepEqual(runtime.gridState, { page: 0, rawWhere: "", rawOrderBy: "", total: null, querySplit: 50 });
     assert.deepEqual(runtime.cache, null);
     assert.deepEqual([...runtime.changes.edits], []);
     assert.deepEqual([...runtime.changes.deletes], []);

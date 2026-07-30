@@ -11,17 +11,18 @@ import { useTablePage } from "./use-table-page.js";
 import { DataGrid } from "./data-grid.jsx";
 import { FilterBar } from "./filter-bar.jsx";
 import { Pager } from "./pager.jsx";
+import { nextOrderBy, parseOrderBy } from "./order-by.js";
 import { PendingBar } from "./pending-bar.jsx";
 import { ReviewSheet } from "./review-sheet.jsx";
 import { CellViewerModal } from "./cell-viewer.jsx";
 import { useSession } from "../workbench/session-context.jsx";
 import { objectCacheKey, isCurrentDataApply, isCurrentDataCount } from "../workbench/workspace-state.js";
-import { dataRuntimeFor, invalidateDataRuntime } from "../workbench/data-runtime.js";
+import { dataRuntimeFor, initialGridState, invalidateDataRuntime } from "../workbench/data-runtime.js";
 
 export function gridStateFor(session, ref) {
     const key = objectCacheKey(ref);
     if (!session.gridState.has(key))
-        session.gridState.set(key, { page: 0, sort: null, filters: [], rawWhere: "", total: null });
+        session.gridState.set(key, { ...initialGridState });
     return session.gridState.get(key);
 }
 
@@ -47,6 +48,8 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
     const activeWorkspaceKey = objectCacheKey(tableRef);
     const runtime = dataRuntimeFor(session, activeWorkspaceKey, tableRef, undefined, workspaceId);
     const [gridState, setGridState] = useState(() => ({ ...runtime.gridState, ...gridStateFor(session, tableRef) }));
+    const [draftWhere, setDraftWhere] = useState(gridState.rawWhere);
+    const [draftOrderBy, setDraftOrderBy] = useState(gridState.rawOrderBy);
     const [, bumpChanges] = useReducer((n) => n + 1, 0);
     const [editing, setEditing] = useState(null);
     const [review, setReview] = useState(null);
@@ -64,14 +67,30 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
     }, [page, tableRef, setStatus]);
 
     const commitGrid = (patch) => {
-        const next = { ...gridState, ...patch };
+        const next = { ...session.gridState.get(activeWorkspaceKey), ...gridState, ...patch };
         setGridState(next);
         session.gridState.set(activeWorkspaceKey, next);
     };
 
+    const queryBar = (
+        <FilterBar
+            rawWhere={draftWhere}
+            rawOrderBy={draftOrderBy}
+            initialRatio={gridState.querySplit}
+            onWhereChange={setDraftWhere}
+            onOrderByChange={setDraftOrderBy}
+            onApply={() => commitGrid({ rawWhere: draftWhere, rawOrderBy: draftOrderBy, page: 0, total: null })}
+            onRatioChange={(querySplit) => session.gridState.set(activeWorkspaceKey, {
+                ...session.gridState.get(activeWorkspaceKey),
+                querySplit,
+            })}
+        />
+    );
+
     if (page.loading)
         return (
             <div className="flex min-h-0 flex-1 flex-col">
+                {queryBar}
                 <div className="flex h-full items-center justify-center text-muted-foreground">Loading…</div>
             </div>
         );
@@ -79,6 +98,7 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
     if (page.error)
         return (
             <div className="flex min-h-0 flex-1 flex-col">
+                {queryBar}
                 <div className="p-[var(--s6)]"><div className="error-box">{page.error}</div></div>
             </div>
         );
@@ -143,16 +163,11 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
     };
 
     const readOnlyBanner = !page.editable && tableRef.kind !== "view";
+    const sortDirections = parseOrderBy(session.conn.engine, gridState.rawOrderBy, page.displayColumns);
 
     return (
         <div className="flex min-h-0 flex-1 flex-col">
-            <FilterBar
-                key={objectCacheKey(tableRef)}
-                columns={page.info.columns}
-                filters={gridState.filters}
-                rawWhere={gridState.rawWhere}
-                onApply={({ filters, rawWhere }) => commitGrid({ filters, rawWhere, page: 0 })}
-            />
+            {queryBar}
             {readOnlyBanner ? (
                 <div
                     className="flex h-[var(--statusbar-height)] items-center gap-[var(--s3)] border-b px-[var(--s5)] text-[var(--font-footnote)] text-muted-foreground"
@@ -172,6 +187,12 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
                     setEditing={setEditing}
                     onContextItems={contextItemsFor}
                     onViewCell={(value) => setViewerValue(value)}
+                    sortDirections={sortDirections}
+                    onSort={(column) => {
+                        const rawOrderBy = nextOrderBy(session.conn.engine, draftOrderBy, column, page.displayColumns);
+                        setDraftOrderBy(rawOrderBy);
+                        commitGrid({ rawOrderBy, page: 0 });
+                    }}
                 />
             </div>
             <PendingBar

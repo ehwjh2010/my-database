@@ -3,7 +3,7 @@ import { buildSelect } from "../lib/sql/select-builder.js";
 import { createChanges, isEditable } from "./pending-changes.js";
 import { dataRuntimeFor, isCurrentDataRuntime, nextDataRequest } from "../workbench/data-runtime.js";
 
-const GRID_KEYS = ["page", "sort", "filters", "rawWhere", "total"];
+const GRID_KEYS = ["page", "rawWhere", "rawOrderBy"];
 
 function sameValue(left, right) {
     if (left === right)
@@ -32,10 +32,8 @@ function freezeSnapshot(value) {
 function snapshotGridState(gridState) {
     return freezeSnapshot({
         page: gridState.page,
-        sort: gridState.sort ? { ...gridState.sort } : gridState.sort,
-        filters: (gridState.filters || []).map((filter) => ({ ...filter })),
         rawWhere: gridState.rawWhere,
-        total: gridState.total,
+        rawOrderBy: gridState.rawOrderBy,
     });
 }
 
@@ -117,9 +115,8 @@ export async function loadTablePage(session, target, runtime, request) {
     const editable = target.tableRef.kind !== "view" && isEditable(changes);
     const useRowid = changes.keyColumns?.[0] === "__rowid";
     const sql = buildSelect(session.conn.engine, target.tableRef, {
-        filters: target.gridState.filters,
         rawWhere: target.gridState.rawWhere,
-        sort: target.gridState.sort,
+        rawOrderBy: target.gridState.rawOrderBy,
         limit: session.pageSize,
         offset: target.gridState.page * session.pageSize,
         rowid: useRowid,

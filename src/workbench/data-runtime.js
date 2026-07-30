@@ -1,6 +1,6 @@
 import { createChanges } from "../grid/pending-changes.js";
 
-export const initialGridState = Object.freeze({ page: 0, sort: null, filters: [], rawWhere: "", total: null });
+export const initialGridState = Object.freeze({ page: 0, rawWhere: "", rawOrderBy: "", total: null, querySplit: 50 });
 
 export function createDataRuntime(workspaceId, scopeEpoch, generation, options = {}) {
     return {

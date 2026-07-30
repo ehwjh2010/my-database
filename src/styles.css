@@ -383,6 +383,39 @@ textarea:focus {
   border-color: transparent;
 }
 
+.data-query-bar {
+  display: grid;
+  gap: 0;
+  padding: 0;
+  overflow-x: auto;
+}
+
+.data-query-bar .search-bar-input {
+  padding: 0 var(--s4);
+}
+
+.query-separator {
+  position: relative;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.query-separator::after {
+  content: "";
+  position: absolute;
+  top: var(--s2);
+  bottom: var(--s2);
+  left: 4px;
+  width: 1px;
+  background: var(--muxy-border);
+}
+
+.query-separator:hover::after,
+.query-separator:focus-visible::after {
+  background: var(--muxy-accent);
+}
+
 .query-tabs-row {
   gap: var(--s1);
   padding-right: var(--s3);
@@ -519,6 +552,44 @@ textarea:focus {
   text-align: left;
   font-weight: 600;
   white-space: nowrap;
+}
+
+.data-grid-table th:not(.gutter) {
+  padding: 0;
+}
+
+.sortable-header {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  height: 100%;
+  padding: 0 var(--s4);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.sortable-header:hover {
+  background: var(--muxy-hover);
+}
+
+.sortable-header:focus-visible {
+  outline: 2px solid var(--muxy-accent);
+  outline-offset: -2px;
+}
+
+.sort-arrow {
+  display: inline-flex;
+  margin-left: auto;
+}
+
+.sort-arrow-asc {
+  transform: rotate(180deg);
 }
 
 .grid-table td {

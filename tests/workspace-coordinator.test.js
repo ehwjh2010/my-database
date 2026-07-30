@@ -774,7 +774,7 @@ test("initiate methods capture frozen operation snapshots with independent token
     const coordinator = createWorkspaceCoordinator(session, stubAdapters());
     const { workspaceId } = coordinator.openOrActivate({ database: "app", schema: "main", table: "orders" });
 
-    const read = coordinator.initiateDataRead(workspaceId, { page: 0, sort: null, filters: [], rawWhere: "" });
+    const read = coordinator.initiateDataRead(workspaceId, { page: 0, rawWhere: "", rawOrderBy: "" });
     assert.equal(read.ownership.workspaceId, workspaceId);
     assert.equal(read.ownership.scopeEpoch, 0);
     assert.equal(read.ownership.generation, session.registry.byId[workspaceId].generation);
@@ -810,13 +810,17 @@ test("data count snapshots keep the workspace, scope, object, and latest count t
     const coordinator = createWorkspaceCoordinator(session, stubAdapters());
     const { workspaceId } = coordinator.openOrActivate({ database: "app", schema: "main", table: "orders" });
 
-    const stale = coordinator.initiateDataCount(workspaceId, { page: 0, total: null });
-    const current = coordinator.initiateDataCount(workspaceId, { page: 1, total: null });
+    const stale = coordinator.initiateDataCount(workspaceId, { page: 0, rawWhere: "", total: null });
+    const current = coordinator.initiateDataCount(workspaceId, { page: 1, rawWhere: "", total: null });
 
     assert.equal(stale.operationCtx.database, "app");
     assert.equal(stale.objectRef.table, "orders");
     assert.equal(isCurrentDataCount(session, stale), false);
     assert.equal(isCurrentDataCount(session, current), true);
+
+    const key = session.registry.byId[workspaceId].key;
+    session.gridState.set(key, { ...session.gridState.get(key), rawWhere: "active = 1" });
+    assert.equal(isCurrentDataCount(session, current), false);
 
     session.scopeGeneration = 1;
     assert.equal(isCurrentDataCount(session, current), false);
