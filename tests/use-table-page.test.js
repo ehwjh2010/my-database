@@ -3,12 +3,13 @@ import test from "node:test";
 
 import { dataRuntimeFor, nextDataRequest } from "../src/workbench/data-runtime.js";
 import { cachedPageFor, loadTablePage, targetIsCurrent } from "../src/grid/use-table-page.js";
+import { createWorkspaceCoordinator } from "../src/workbench/workspace-coordinator.js";
 
 const tableRef = Object.freeze({ database: "app", schema: "main", table: "orders" });
 const gridState = { page: 0, rawWhere: "", rawOrderBy: '"id" DESC', total: null, querySplit: 50 };
 
 function sessionWithDriver(calls) {
-    return {
+    const session = {
         conn: { engine: "sqlite" },
         ctx: { database: "app", schema: "main" },
         pageSize: 2,
@@ -23,7 +24,7 @@ function sessionWithDriver(calls) {
         driver: {
             async tableInfo(ctx, ref) {
                 calls.push({ kind: "info", ctx, ref });
-                return { columns: [{ name: "id", type: "integer" }], primaryKey: ["id"], rowid: null };
+                return { columns: [{ name: "id", type: "integer", comment: "Order number" }], primaryKey: ["id"], rowid: null };
             },
             async runQuery(ctx, sql, options) {
                 calls.push({ kind: "query", ctx, sql, options });
@@ -31,6 +32,8 @@ function sessionWithDriver(calls) {
             },
         },
     };
+    createWorkspaceCoordinator(session);
+    return session;
 }
 
 test("loadTablePage uses the captured driver context for metadata and rows", async () => {
@@ -54,6 +57,7 @@ test("loadTablePage uses the captured driver context for metadata and rows", asy
     const page = await loadTablePage(session, target, runtime, request);
 
     assert.equal(page.displayRows.length, 1);
+    assert.equal(page.displayColumns[0].comment, "Order number");
     assert.equal(calls.length, 2);
     assert.equal(calls[0].ctx.database, "app");
     assert.equal(calls[1].ctx.schema, "main");
@@ -128,4 +132,27 @@ test("view pages remain read-only even when metadata exposes a key", async () =>
     );
 
     assert.equal(page.editable, false);
+});
+
+test("empty pages keep metadata columns without inventing rows", async () => {
+    const calls = [];
+    const session = sessionWithDriver(calls);
+    session.driver.runQuery = async () => [{ columns: [], rows: [] }];
+    const key = "app.main.orders";
+    const runtime = dataRuntimeFor(session, key, tableRef, undefined, 1, 1);
+    const request = { ...nextDataRequest(runtime, session), dataRevision: 0 };
+    const page = await loadTablePage(session, {
+        tableRef,
+        gridState,
+        workspaceKey: key,
+        dataRevision: 0,
+        workspaceId: 1,
+        workspaceGeneration: 1,
+        scopeEpoch: 4,
+        generation: runtime.generation,
+        driverContext: Object.freeze({ database: "app", schema: "main" }),
+    }, runtime, request);
+
+    assert.deepEqual(page.displayColumns.map((column) => column.name), ["id"]);
+    assert.deepEqual(page.displayRows, []);
 });

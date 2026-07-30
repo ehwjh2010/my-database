@@ -1,7 +1,7 @@
 import { objectCacheKey } from "./workspace-state.js";
 
 export async function loadStructureSnapshot(session, read) {
-    const info = await session.driver.tableInfo(read.operationCtx, read.objectRef);
+    const info = await session.coordinator.loadTableInfo(read.objectRef, read.operationCtx);
     const ddl = await session.driver.ddl(read.operationCtx, read.objectRef);
     return { info, ddl };
 }

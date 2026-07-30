@@ -41,6 +41,97 @@ function stubAdapters(overrides = {}) {
     return { notify: () => {}, ...overrides };
 }
 
+function deferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((done, fail) => {
+        resolve = done;
+        reject = fail;
+    });
+    return { promise, resolve, reject };
+}
+
+test("loadTableInfo deduplicates concurrent reads, caches success, and retries failures", async () => {
+    const first = deferred();
+    let calls = 0;
+    const session = stubSession({
+        driver: {
+            async tableInfo() {
+                calls += 1;
+                if (calls === 1)
+                    return first.promise;
+                if (calls === 2)
+                    throw new Error("metadata failed");
+                return { columns: [{ name: "id" }], primaryKey: ["id"], indexes: [], foreignKeys: [], triggers: [], rowid: null };
+            },
+        },
+    });
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters());
+    const orders = { database: "app", schema: "main", table: "orders" };
+    const pending = coordinator.loadTableInfo(orders);
+
+    assert.equal(coordinator.loadTableInfo(orders), pending);
+    first.resolve({ columns: [{ name: "id" }] });
+    const info = await pending;
+    assert.equal(await coordinator.loadTableInfo(orders), info);
+    assert.equal(calls, 1);
+
+    const customers = { database: "app", schema: "main", table: "customers" };
+    await assert.rejects(coordinator.loadTableInfo(customers), /metadata failed/);
+    assert.match(session.tableInfoErrors.get(objectCacheKey(customers)).message, /metadata failed/);
+    assert.equal((await coordinator.loadTableInfo(customers)).columns[0].name, "id");
+    assert.equal(session.tableInfoErrors.has(objectCacheKey(customers)), false);
+    assert.equal(calls, 3);
+});
+
+test("catalog refresh prevents an older table-info request from committing", async () => {
+    const pendingInfo = deferred();
+    const session = stubSession({
+        driver: {
+            async tableInfo() {
+                return pendingInfo.promise;
+            },
+            async listTables() {
+                return [];
+            },
+            async allColumns() {
+                return {};
+            },
+        },
+    });
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters());
+    const ref = { database: "app", schema: "main", table: "orders" };
+    const old = coordinator.loadTableInfo(ref);
+
+    await coordinator.initiateCatalogLoad();
+    pendingInfo.resolve({ columns: [{ name: "stale" }] });
+
+    await assert.rejects(old, /stale/);
+    assert.equal(session.infoCache.has(objectCacheKey(ref)), false);
+});
+
+test("focusTableColumn reuses workspaces, switches to data, and emits a new token every time", () => {
+    const requests = [];
+    const session = stubSession();
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({ notifyColumnFocus: (request) => requests.push(request) }));
+    const ref = { database: "app", schema: "main", table: "orders", kind: "table" };
+
+    const first = coordinator.focusTableColumn(ref, "total");
+    coordinator.changeView(first.workspaceId, "structure");
+    const second = coordinator.focusTableColumn(ref, "total");
+    const third = coordinator.focusTableColumn(ref, "total");
+
+    assert.equal(first.created, true);
+    assert.equal(second.created, false);
+    assert.deepEqual(session.registry.order, [first.workspaceId]);
+    assert.equal(session.registry.byId[first.workspaceId].view, "data");
+    assert.ok(second.token > first.token);
+    assert.ok(third.token > second.token);
+    assert.deepEqual(requests.slice(0, 3).map((request) => request.token), [first.token, second.token, third.token]);
+    assert.equal(coordinator.consumeColumnFocus(third.token), true);
+    assert.equal(coordinator.consumeColumnFocus(third.token), false);
+});
+
 test("openOrActivate creates a workspace with data view and stores it in the session registry", () => {
     const session = stubSession();
     let revisions = 0;

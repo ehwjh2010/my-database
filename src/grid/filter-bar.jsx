@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { FieldInput } from "./field-input.jsx";
 
 const MIN_WIDTH = 120;
 const SEPARATOR_WIDTH = 9;
@@ -9,7 +10,7 @@ function clampRatio(element, value) {
     return Math.max(minimum, Math.min(100 - minimum, value));
 }
 
-export function FilterBar({ rawWhere, rawOrderBy, initialRatio, onWhereChange, onOrderByChange, onApply, onRatioChange }) {
+export function FilterBar({ rawWhere, rawOrderBy, columns, engine, initialRatio, onWhereChange, onOrderByChange, onApply, onRatioChange }) {
     const bar = useRef(null);
     const dragging = useRef(false);
     const ratioValue = useRef(initialRatio);
@@ -36,25 +37,19 @@ export function FilterBar({ rawWhere, rawOrderBy, initialRatio, onWhereChange, o
             event.currentTarget.releasePointerCapture(event.pointerId);
         onRatioChange(ratioValue.current);
     };
-    const submitOnEnter = (event) => {
-        if (event.key === "Enter")
-            onApply();
-    };
-
     return (
         <div
             ref={bar}
             className="search-bar data-query-bar"
             style={{ gridTemplateColumns: `minmax(${MIN_WIDTH}px, ${ratio}fr) ${SEPARATOR_WIDTH}px minmax(${MIN_WIDTH}px, ${100 - ratio}fr)` }}
         >
-            <input
-                type="text"
-                className="mono search-bar-input"
-                aria-label="WHERE"
-                placeholder="WHERE"
+            <FieldInput
+                label="WHERE"
                 value={rawWhere}
-                onChange={(event) => onWhereChange(event.target.value)}
-                onKeyDown={submitOnEnter}
+                columns={columns}
+                engine={engine}
+                onChange={onWhereChange}
+                onApply={onApply}
             />
             <div
                 className="query-separator"
@@ -80,14 +75,13 @@ export function FilterBar({ rawWhere, rawOrderBy, initialRatio, onWhereChange, o
                     onRatioChange(updateRatio(ratioValue.current + (event.key === "ArrowLeft" ? -2 : 2)));
                 }}
             />
-            <input
-                type="text"
-                className="mono search-bar-input"
-                aria-label="ORDER BY"
-                placeholder="ORDER BY"
+            <FieldInput
+                label="ORDER BY"
                 value={rawOrderBy}
-                onChange={(event) => onOrderByChange(event.target.value)}
-                onKeyDown={submitOnEnter}
+                columns={columns}
+                engine={engine}
+                onChange={onOrderByChange}
+                onApply={onApply}
             />
         </div>
     );

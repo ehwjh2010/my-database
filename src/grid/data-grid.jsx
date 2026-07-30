@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { cellDisplay } from "./grid.jsx";
+import { useEffect, useRef, useState } from "react";
+import { cellDisplay, ColumnTooltip } from "./grid.jsx";
 import { CellEditor } from "./cell-editor.jsx";
 import { ContextMenu } from "../ui/context-menu.jsx";
 import { InsertRows } from "./insert-rows.jsx";
@@ -14,9 +14,20 @@ function normalizeInput(value) {
     return String(value);
 }
 
-export function DataGrid({ page, changes, editable, onChange, editing, setEditing, onContextItems, onViewCell, sortDirections, onSort }) {
+export function DataGrid({ page, changes, editable, onChange, editing, setEditing, onContextItems, onCopyColumnName, onViewCell, selectedCell, onSelectCell, scrollTarget, sortDirections, onSort }) {
     const { displayColumns, displayRows, keyValuesFor } = page;
     const [menu, setMenu] = useState(null);
+    const headerRefs = useRef(new Map());
+    const cellRefs = useRef(new Map());
+
+    useEffect(() => {
+        if (!scrollTarget)
+            return;
+        const target = scrollTarget.row === null
+            ? headerRefs.current.get(scrollTarget.column)
+            : cellRefs.current.get(`${scrollTarget.row}:${scrollTarget.column}`);
+        target?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }, [scrollTarget]);
 
     const commitRowEdit = (r, column, original, next) => {
         if (next !== undefined)
@@ -60,20 +71,26 @@ export function DataGrid({ page, changes, editable, onChange, editing, setEditin
                 <thead>
                     <tr>
                         {editable ? <th className="gutter" /> : null}
-                        {displayColumns.map((col) => {
+                        {displayColumns.map((col, c) => {
                             const direction = sortDirections.get(col.name);
                             return (
-                                <th key={col.name} aria-sort={direction === "ASC" ? "ascending" : direction === "DESC" ? "descending" : "none"}>
-                                    <button type="button" className="sortable-header" title={col.type || col.name} onClick={() => onSort(col.name)}>
+                                <th
+                                    key={col.name}
+                                    ref={(node) => node ? headerRefs.current.set(c, node) : headerRefs.current.delete(c)}
+                                    aria-sort={direction === "ASC" ? "ascending" : direction === "DESC" ? "descending" : "none"}
+                                    onContextMenu={(event) => {
+                                        event.preventDefault();
+                                        setMenu({ x: event.clientX, y: event.clientY, items: [{ label: "Copy Column Name", onClick: () => onCopyColumnName(col.name) }] });
+                                    }}
+                                >
+                                    <button type="button" className="sortable-header" onClick={() => onSort(col.name)}>
                                         <span>{col.name}</span>
-                                        {col.type ? (
-                                            <span className="font-normal text-muted-foreground">{col.type.toLowerCase()}</span>
-                                        ) : null}
                                         {direction ? (
                                             <span className={`sort-arrow ${direction === "ASC" ? "sort-arrow-asc" : ""}`}>
                                                 <Icon name="chevronDown" size={12} />
                                             </span>
                                         ) : null}
+                                        <ColumnTooltip column={col} />
                                     </button>
                                 </th>
                             );
@@ -94,9 +111,15 @@ export function DataGrid({ page, changes, editable, onChange, editing, setEditin
                                     const column = displayColumns[c];
                                     const edit = editable ? getEdit(changes.model, keyValuesFor(r), column.name) : { edited: false };
                                     const isEditing = editing && editing.kind === "row" && editing.row === r && editing.column === column.name;
+                                    const selected = selectedCell?.row === r && selectedCell.column === c;
                                     if (isEditing)
                                         return (
-                                            <td key={c} className="editing">
+                                            <td
+                                                key={c}
+                                                ref={(node) => node ? cellRefs.current.set(`${r}:${c}`, node) : cellRefs.current.delete(`${r}:${c}`)}
+                                                className={`editing${selected ? " cell-selected" : ""}`}
+                                                onClick={() => onSelectCell({ row: r, column: c })}
+                                            >
                                                 <CellEditor
                                                     type={column.type}
                                                     value={edit.edited ? edit.value : value}
@@ -110,8 +133,10 @@ export function DataGrid({ page, changes, editable, onChange, editing, setEditin
                                     return (
                                         <td
                                             key={c}
-                                            className={edit.edited ? "cell-edited" : undefined}
+                                            ref={(node) => node ? cellRefs.current.set(`${r}:${c}`, node) : cellRefs.current.delete(`${r}:${c}`)}
+                                            className={[edit.edited ? "cell-edited" : "", selected ? "cell-selected" : ""].filter(Boolean).join(" ") || undefined}
                                             title={info.title}
+                                            onClick={() => onSelectCell({ row: r, column: c })}
                                             onDoubleClick={editable ? () => setEditing({ kind: "row", row: r, column: column.name }) : () => onViewCell(value)}
                                             onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, items: rowContextItems(r, c) }); }}
                                         >

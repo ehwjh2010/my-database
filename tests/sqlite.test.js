@@ -38,3 +38,33 @@ test("table discovery maps SQLite tables and views", async () => {
     ]);
     assert.deepEqual(calls[0].slice(0, 5), ["sqlite3", "-batch", "-bail", "-json", "file:/tmp/Application%20Support/example.sqlite?mode=rw"]);
 });
+
+test("tableInfo reads complete columns and all index columns without N+1 queries", async () => {
+    calls = [];
+    muxy.exec = async (argv) => {
+        calls.push(argv);
+        const sql = argv.at(-1);
+        let stdout = "[]";
+        if (sql.includes("pragma_table_xinfo"))
+            stdout = JSON.stringify([{ cid: 0, name: "b", type: "TEXT", notnull: 1, dflt_value: null, pk: 2, hidden: 0 }, { cid: 1, name: "a", type: "INTEGER", notnull: 1, dflt_value: null, pk: 1, hidden: 0 }, { cid: 2, name: "total", type: "INTEGER", notnull: 0, dflt_value: "0", pk: 0, hidden: 2 }]);
+        else if (sql.includes("pragma_index_list"))
+            stdout = JSON.stringify([{ name: "orders_unique", is_unique: 1, seqno: 0, col: "a" }, { name: "orders_unique", is_unique: 1, seqno: 1, col: "b" }]);
+        else if (sql.includes("foreign_key_list"))
+            stdout = JSON.stringify([{ from: "a", table: "accounts", to: "id", on_update: "CASCADE", on_delete: "RESTRICT" }]);
+        else if (sql.includes("type = 'trigger'"))
+            stdout = "[]";
+        else if (sql.includes("SELECT sql FROM sqlite_master"))
+            stdout = JSON.stringify([{ sql: "CREATE TABLE orders (b TEXT, a INTEGER, total INTEGER, PRIMARY KEY (a, b)) WITHOUT ROWID, STRICT" }]);
+        return { exitCode: 0, stdout, stderr: "" };
+    };
+
+    const info = await sqlite.tableInfo(ctx, { table: "orders", kind: "table" });
+
+    assert.deepEqual(info.primaryKey, ["a", "b"]);
+    assert.deepEqual(info.indexes, [{ name: "orders_unique", unique: true, columns: ["a", "b"] }]);
+    assert.equal(info.columns[2].name, "total");
+    assert.equal(info.columns[2].default, "0");
+    assert.deepEqual(info.metadata, { strict: true, withoutRowid: true });
+    assert.equal(info.rowid, null);
+    assert.equal(calls.filter((argv) => argv.at(-1).includes("pragma_index")).length, 1);
+});

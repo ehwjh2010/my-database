@@ -16,6 +16,7 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, children }
     const [schemaEpoch, bumpEpoch] = useReducer((n) => n + 1, 0);
     const [pendingRevision, bumpPendingRevision] = useReducer((n) => n + 1, 0);
     const [dataRevision, bumpDataRevision] = useReducer((n) => n + 1, 0);
+    const [columnFocus, setColumnFocus] = useState(session.columnFocus || null);
     const queryRunRef = useRef(null);
     const notifyPendingChanges = useCallback(() => bumpPendingRevision(), []);
 
@@ -23,6 +24,7 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, children }
         coordinator.adapters.notify = bumpRegistryRevision;
         coordinator.adapters.notifyPending = bumpPendingRevision;
         coordinator.adapters.notifyData = bumpDataRevision;
+        coordinator.adapters.notifyColumnFocus = setColumnFocus;
         coordinator.adapters.notifyScope = () => {
             bumpEpoch();
             setStatus("Ready");
@@ -46,6 +48,9 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, children }
     }, [coordinator]);
 
     const openWorkspace = useCallback((next) => coordinator.openOrActivate(next), [coordinator]);
+    const loadTableInfo = useCallback((ref) => coordinator.loadTableInfo(ref), [coordinator]);
+    const focusTableColumn = useCallback((ref, columnName) => coordinator.focusTableColumn(ref, columnName), [coordinator]);
+    const consumeColumnFocus = useCallback((token) => coordinator.consumeColumnFocus(token), [coordinator]);
     const activateWorkspace = useCallback((workspaceId) => coordinator.setActive(workspaceId), [coordinator]);
     const closeWorkspace = useCallback((workspaceId) => coordinator.close(workspaceId), [coordinator]);
     const setWorkspaceMode = useCallback((workspaceId, mode) => coordinator.changeView(workspaceId, mode), [coordinator]);
@@ -85,6 +90,10 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, children }
             dataRevision,
             queryRunRef,
             openWorkspace,
+            loadTableInfo,
+            focusTableColumn,
+            columnFocus,
+            consumeColumnFocus,
             activateWorkspace,
             closeWorkspace,
             refreshData,
@@ -103,7 +112,7 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, children }
             schemaEpoch,
             queryHooksRef,
         }),
-        [session, coordinator, order, activeId, byId, activeKey, activeMode, activeRef, registryRevision, pendingRevision, dataRevision, notifyPendingChanges, changeView, selectTable, openWorkspace, activateWorkspace, closeWorkspace, refreshData, setWorkspaceMode, tables, columnsMap, catalogError, status, refreshSchema, changeScope, schemaEpoch, queryHooksRef],
+        [session, coordinator, order, activeId, byId, activeKey, activeMode, activeRef, registryRevision, pendingRevision, dataRevision, notifyPendingChanges, changeView, selectTable, openWorkspace, loadTableInfo, focusTableColumn, columnFocus, consumeColumnFocus, activateWorkspace, closeWorkspace, refreshData, setWorkspaceMode, tables, columnsMap, catalogError, status, refreshSchema, changeScope, schemaEpoch, queryHooksRef],
     );
 
     return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

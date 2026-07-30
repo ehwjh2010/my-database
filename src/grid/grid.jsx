@@ -18,6 +18,15 @@ export function CellValue({ value }) {
     return <>{info.text}</>;
 }
 
+export function ColumnTooltip({ column }) {
+    return (
+        <span className="column-tooltip" role="tooltip">
+            <span><strong>{column.name}</strong>{column.type ? `: ${column.type}` : null}</span>
+            {column.comment ? <span>{column.comment}</span> : null}
+        </span>
+    );
+}
+
 export function Grid({ columns, rows }) {
     if (!columns.length)
         return <div className="flex h-full items-center justify-center text-muted-foreground">No rows returned</div>;
@@ -27,11 +36,12 @@ export function Grid({ columns, rows }) {
                 <thead>
                     <tr>
                         {columns.map((col) => (
-                            <th key={col.name} title={col.type || col.name}>
+                            <th key={col.name} className="column-header">
                                 {col.name}
                                 {col.type ? (
                                     <span className="ml-[var(--s2)] font-normal text-muted-foreground">{col.type.toLowerCase()}</span>
                                 ) : null}
+                                <ColumnTooltip column={col} />
                             </th>
                         ))}
                     </tr>

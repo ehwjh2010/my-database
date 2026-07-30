@@ -45,31 +45,33 @@ export const sqlite = {
 
     async tableInfo(ctx, ref) {
         const table = ref.table;
-        const [columnsSet, indexListSet, fkSet, masterSet, triggersSet] = await Promise.all([
-            query(ctx, `PRAGMA table_info(${quoteIdent("sqlite", table)})`),
-            query(ctx, `PRAGMA index_list(${quoteIdent("sqlite", table)})`),
+        const tableLit = quoteLiteral("sqlite", table);
+        const [columnsSet, indexSet, fkSet, masterSet, triggersSet] = await Promise.all([
+            query(ctx, `SELECT * FROM pragma_table_xinfo(${tableLit}) ORDER BY cid`),
+            query(ctx, `SELECT il.name, il."unique" AS is_unique, ix.seqno, ix.name AS col FROM pragma_index_list(${tableLit}) il LEFT JOIN pragma_index_xinfo(il.name) ix ON ix."key" = 1 ORDER BY il.seq, ix.seqno`),
             query(ctx, `PRAGMA foreign_key_list(${quoteIdent("sqlite", table)})`),
-            query(ctx, `SELECT sql FROM sqlite_master WHERE name = ${quoteLiteral("sqlite", table)}`),
-            query(ctx, `SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ${quoteLiteral("sqlite", table)}`),
+            query(ctx, `SELECT sql FROM sqlite_master WHERE name = ${tableLit}`),
+            query(ctx, `SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ${tableLit}`),
         ]);
+        const ddl = masterSet[0]?.[0]?.sql || "";
+        const autoIncrement = /\bAUTOINCREMENT\b/i.test(ddl);
         const columns = (columnsSet[0] || []).map((row) => ({
             name: row.name,
             type: row.type || "",
             nullable: row.notnull === 0,
             default: row.dflt_value,
             isPk: row.pk > 0,
-            autoIncrement: false,
+            autoIncrement: autoIncrement && row.pk > 0,
         }));
-        const ddl = masterSet[0]?.[0]?.sql || "";
-        const withoutRowid = /WITHOUT\s+ROWID/i.test(ddl);
-        const indexes = [];
-        for (const idx of indexListSet[0] || []) {
-            const infoSet = await query(ctx, `PRAGMA index_info(${quoteIdent("sqlite", idx.name)})`);
-            indexes.push({
-                name: idx.name,
-                unique: idx.unique === 1,
-                columns: (infoSet[0] || []).map((c) => c.name).filter(Boolean),
-            });
+        const tableOptions = ddl.slice(ddl.lastIndexOf(")") + 1);
+        const withoutRowid = /WITHOUT\s+ROWID/i.test(tableOptions);
+        const strict = /\bSTRICT\b/i.test(tableOptions);
+        const indexMap = new Map();
+        for (const row of indexSet[0] || []) {
+            if (!indexMap.has(row.name))
+                indexMap.set(row.name, { name: row.name, unique: row.is_unique === 1, columns: [] });
+            if (row.col)
+                indexMap.get(row.name).columns.push(row.col);
         }
         const foreignKeys = (fkSet[0] || []).map((row) => ({
             column: row.from,
@@ -79,8 +81,17 @@ export const sqlite = {
             onDelete: row.on_delete,
         }));
         const triggers = (triggersSet[0] || []).map((row) => ({ name: row.name, definition: row.sql }));
-        const primaryKey = columns.filter((c) => c.isPk).map((c) => c.name);
-        return { columns, indexes, foreignKeys, triggers, primaryKey, rowid: !withoutRowid && !primaryKey.length ? "rowid" : null };
+        const primaryKey = (columnsSet[0] || []).filter((row) => row.pk > 0).sort((left, right) => left.pk - right.pk).map((row) => row.name);
+        const metadata = { ...(strict ? { strict: true } : {}), ...(withoutRowid ? { withoutRowid: true } : {}) };
+        return {
+            columns,
+            indexes: [...indexMap.values()],
+            foreignKeys,
+            triggers,
+            primaryKey,
+            rowid: ref.kind !== "view" && !withoutRowid && !primaryKey.length ? "rowid" : null,
+            ...(Object.keys(metadata).length ? { metadata } : {}),
+        };
     },
 
     async runQuery(ctx, sql, opts = {}) {

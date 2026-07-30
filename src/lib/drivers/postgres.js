@@ -116,42 +116,57 @@ export const postgres = {
 
     async listTables(ctx) {
         const schema = quoteLiteral("postgres", ctx.schema || "public");
-        const result = await query(ctx, `SELECT c.relname AS name, CASE WHEN c.relkind IN ('v','m') THEN 'view' ELSE 'table' END AS kind, GREATEST(c.reltuples, 0)::bigint AS estimate FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p','v','m') AND n.nspname = ${schema} ORDER BY 1`);
-        return rowsAsObjects(result).map((r) => ({ name: r.name, kind: r.kind, rowEstimate: Number(r.estimate) || null }));
+        const result = await query(ctx, `SELECT c.relname AS name, CASE WHEN c.relkind IN ('v','m') THEN 'view' ELSE 'table' END AS kind, GREATEST(c.reltuples, 0)::bigint AS estimate, obj_description(c.oid, 'pg_class') AS comment FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p','v','m') AND n.nspname = ${schema} ORDER BY 1`);
+        return rowsAsObjects(result).map((r) => ({ name: r.name, kind: r.kind, rowEstimate: Number(r.estimate) || null, comment: r.comment }));
     },
 
     async tableInfo(ctx, ref) {
-        const schemaLit = quoteLiteral("postgres", ref.schema || "public");
-        const tableLit = quoteLiteral("postgres", ref.table);
         const rc = regclass(ctx, ref);
-        const [cols, pk, idx, fks, trg] = await Promise.all([
-            query(ctx, `SELECT column_name AS name, data_type AS type, is_nullable AS nullable, column_default AS dflt FROM information_schema.columns WHERE table_schema = ${schemaLit} AND table_name = ${tableLit} ORDER BY ordinal_position`),
-            query(ctx, `SELECT a.attname AS name FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = ${rc} AND i.indisprimary`),
-            query(ctx, `SELECT indexname AS name, indexdef AS definition FROM pg_indexes WHERE schemaname = ${schemaLit} AND tablename = ${tableLit} ORDER BY 1`),
-            query(ctx, `SELECT conname AS name, pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE contype = 'f' AND conrelid = ${rc}`),
+        const [cols, pk, idx, fks, trg, meta] = await Promise.all([
+            query(ctx, `SELECT a.attname AS name, pg_catalog.format_type(a.atttypid, a.atttypmod) AS type, col_description(a.attrelid, a.attnum) AS comment, CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END AS nullable, pg_get_expr(ad.adbin, ad.adrelid) AS dflt, a.attidentity AS identity FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum WHERE c.oid = ${rc} AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum`),
+            query(ctx, `SELECT a.attname AS name, key.position AS seq FROM pg_index i JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS key(attnum, position) ON key.position <= i.indnkeyatts JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = key.attnum WHERE i.indrelid = ${rc} AND i.indisprimary ORDER BY key.position`),
+            query(ctx, `SELECT ci.relname AS name, i.indisunique AS is_unique, position.n AS seq, pg_get_indexdef(i.indexrelid, position.n, true) AS col, pg_get_indexdef(i.indexrelid) AS definition FROM pg_index i JOIN pg_class ci ON ci.oid = i.indexrelid JOIN LATERAL generate_series(1, i.indnkeyatts) AS position(n) ON true WHERE i.indrelid = ${rc} ORDER BY ci.relname, position.n`),
+            query(ctx, `SELECT con.conname AS name, source.position AS seq, source_column.attname AS col, ref_namespace.nspname AS refschema, ref_table.relname AS reftable, ref_column.attname AS refcol, CASE con.confupdtype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS onupdate, CASE con.confdeltype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS ondelete, pg_get_constraintdef(con.oid) AS definition FROM pg_constraint con JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS source(attnum, position) ON true JOIN LATERAL unnest(con.confkey) WITH ORDINALITY AS target(attnum, position) ON target.position = source.position JOIN pg_attribute source_column ON source_column.attrelid = con.conrelid AND source_column.attnum = source.attnum JOIN pg_class ref_table ON ref_table.oid = con.confrelid JOIN pg_namespace ref_namespace ON ref_namespace.oid = ref_table.relnamespace JOIN pg_attribute ref_column ON ref_column.attrelid = con.confrelid AND ref_column.attnum = target.attnum WHERE con.contype = 'f' AND con.conrelid = ${rc} ORDER BY con.conname, source.position`),
             query(ctx, `SELECT tgname AS name, pg_get_triggerdef(oid) AS definition FROM pg_trigger WHERE tgrelid = ${rc} AND NOT tgisinternal`),
+            query(ctx, `SELECT obj_description(${rc}, 'pg_class') AS comment`),
         ]);
-        const pkNames = new Set(pk.rows.map((r) => r[0]));
+        const primaryKey = rowsAsObjects(pk).map((row) => row.name);
+        const pkNames = new Set(primaryKey);
         const columns = rowsAsObjects(cols).map((r) => ({
             name: r.name,
             type: r.type || "",
+            comment: r.comment,
             nullable: r.nullable === "YES",
             default: r.dflt,
             isPk: pkNames.has(r.name),
-            autoIncrement: !!(r.dflt && r.dflt.startsWith("nextval(")),
+            autoIncrement: !!r.identity || !!(r.dflt && r.dflt.startsWith("nextval(")),
         }));
-        const indexes = rowsAsObjects(idx).map((r) => ({
+        const indexMap = new Map();
+        for (const row of rowsAsObjects(idx)) {
+            if (!indexMap.has(row.name))
+                indexMap.set(row.name, { name: row.name, unique: row.is_unique === "t", columns: [], definition: row.definition });
+            indexMap.get(row.name).columns.push(row.col);
+        }
+        const foreignKeys = rowsAsObjects(fks).map((r) => ({
             name: r.name,
-            unique: /CREATE UNIQUE INDEX/i.test(r.definition),
-            columns: (r.definition.match(/\(([^)]*)\)\s*$/)?.[1] || "").split(",").map((s) => s.trim().replace(/^"|"$/g, "")).filter(Boolean),
+            column: r.col,
+            refTable: r.refschema === (ref.schema || "public") ? r.reftable : r.refschema + "." + r.reftable,
+            refColumn: r.refcol,
+            onUpdate: r.onupdate,
+            onDelete: r.ondelete,
             definition: r.definition,
         }));
-        const foreignKeys = rowsAsObjects(fks).map((r) => {
-            const match = r.definition.match(/FOREIGN KEY \("?([^)"]+)"?\) REFERENCES ("?[^("]+"?)\("?([^)"]+)"?\)/);
-            return { name: r.name, column: match?.[1] || "", refTable: (match?.[2] || "").replace(/"/g, ""), refColumn: match?.[3] || "", definition: r.definition };
-        });
         const triggers = rowsAsObjects(trg).map((r) => ({ name: r.name, definition: r.definition }));
-        return { columns, indexes, foreignKeys, triggers, primaryKey: [...pkNames], rowid: null };
+        const comment = rowsAsObjects(meta)[0]?.comment;
+        return {
+            columns,
+            indexes: [...indexMap.values()],
+            foreignKeys,
+            triggers,
+            primaryKey,
+            rowid: null,
+            ...(comment !== null && comment !== undefined && comment !== "" ? { metadata: { comment } } : {}),
+        };
     },
 
     async listRoutines(ctx) {

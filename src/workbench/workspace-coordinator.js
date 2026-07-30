@@ -17,6 +17,10 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
     session.catalogToken = session.catalogToken || 0;
     session.scopeRequestToken = session.scopeRequestToken || 0;
     session.catalogError = session.catalogError || null;
+    session.tableInfoRequests = session.tableInfoRequests || new Map();
+    session.tableInfoErrors = session.tableInfoErrors || new Map();
+    session.columnFocusToken = session.columnFocusToken || 0;
+    session.columnFocus = session.columnFocus || null;
     let registryRevision = 0;
 
     const emit = () => {
@@ -40,10 +44,14 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         clearDataRuntimes(session);
         session.structureCache?.clear();
         session.infoCache?.clear();
+        session.tableInfoRequests.clear();
+        session.tableInfoErrors.clear();
         session.queryState?.clear();
+        session.columnFocus = null;
         commit({ type: "CLEAR_ALL" });
         adapters.notifyPending?.();
         adapters.notifyData?.();
+        adapters.notifyColumnFocus?.(null);
     };
     const clearScopeRuntime = () => {
         session.tables = [];
@@ -54,6 +62,10 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         adapters.notifyCatalog?.();
     };
     const closeWorkspace = (entry) => {
+        if (session.columnFocus?.workspaceId === entry.id) {
+            session.columnFocus = null;
+            adapters.notifyColumnFocus?.(null);
+        }
         clearWorkspaceRuntime(entry.key);
         commit({ type: "CLOSE", id: entry.id });
         adapters.notifyPending?.();
@@ -70,6 +82,35 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
 
         getActive() {
             return entryById(session.registry.activeId);
+        },
+
+        loadTableInfo(objectRef, operationCtx = captureOperationCtx()) {
+            if (!objectRef?.table)
+                return Promise.reject(new Error("INVALID_OBJECT_REF"));
+            const key = objectCacheKey(objectRef);
+            if (session.infoCache.has(key))
+                return Promise.resolve(session.infoCache.get(key));
+            if (session.tableInfoRequests.has(key))
+                return session.tableInfoRequests.get(key);
+            const scopeEpoch = session.scopeGeneration || 0;
+            const catalogToken = session.catalogToken;
+            let request;
+            request = session.driver.tableInfo(operationCtx, objectRef).then((info) => {
+                if ((session.scopeGeneration || 0) !== scopeEpoch || session.catalogToken !== catalogToken || session.tableInfoRequests.get(key) !== request)
+                    throw new Error("Table metadata request is stale.");
+                session.infoCache.set(key, info);
+                session.tableInfoErrors.delete(key);
+                return info;
+            }).catch((error) => {
+                if ((session.scopeGeneration || 0) === scopeEpoch && session.catalogToken === catalogToken && session.tableInfoRequests.get(key) === request)
+                    session.tableInfoErrors.set(key, error);
+                throw error;
+            }).finally(() => {
+                if (session.tableInfoRequests.get(key) === request)
+                    session.tableInfoRequests.delete(key);
+            });
+            session.tableInfoRequests.set(key, request);
+            return request;
         },
 
         openOrActivate(objectRef) {
@@ -134,6 +175,31 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
                 return STALE_WORKSPACE;
             commit({ type: "SET_VIEW", id: workspaceId, view });
             return { view, registryRevision };
+        },
+
+        focusTableColumn(objectRef, columnName) {
+            if (!columnName)
+                return { error: "INVALID_COLUMN" };
+            const opened = coordinator.openOrActivate(objectRef);
+            if (opened.error)
+                return opened;
+            coordinator.changeView(opened.workspaceId, "data");
+            const request = {
+                token: ++session.columnFocusToken,
+                workspaceId: opened.workspaceId,
+                columnName,
+            };
+            session.columnFocus = request;
+            adapters.notifyColumnFocus?.(request);
+            return { ...request, created: opened.created };
+        },
+
+        consumeColumnFocus(token) {
+            if (session.columnFocus?.token !== token)
+                return false;
+            session.columnFocus = null;
+            adapters.notifyColumnFocus?.(null);
+            return true;
         },
 
         onPendingChange(workspaceId) {
@@ -225,6 +291,8 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             const catalogToken = session.catalogToken;
             const operationCtx = captureOperationCtx();
             session.infoCache?.clear();
+            session.tableInfoRequests.clear();
+            session.tableInfoErrors.clear();
             let tables;
             let columnsMap;
             try {
@@ -353,5 +421,6 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             return { allowClose, dirtyWorkspaceCount };
         },
     };
+    session.coordinator = coordinator;
     return coordinator;
 }

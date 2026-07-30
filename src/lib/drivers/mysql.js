@@ -97,25 +97,28 @@ export function makeMysqlDriver(engine, binaries) {
         },
 
         async listTables(ctx) {
-            const result = await query(ctx, "SELECT TABLE_NAME AS name, TABLE_TYPE AS kind, TABLE_ROWS AS estimate FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() ORDER BY 1");
+            const result = await query(ctx, "SELECT TABLE_NAME AS name, TABLE_TYPE AS kind, TABLE_ROWS AS estimate, TABLE_COMMENT AS comment FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() ORDER BY 1");
             return rowsAsObjects(result).map((r) => ({
                 name: r.name,
                 kind: /view/i.test(r.kind || "") ? "view" : "table",
                 rowEstimate: r.estimate === null ? null : Number(r.estimate),
+                comment: r.comment,
             }));
         },
 
         async tableInfo(ctx, ref) {
             const tableLit = quoteLiteral(engine, ref.table);
             const [cols, idx, fks, trg] = await Promise.all([
-                query(ctx, `SELECT COLUMN_NAME AS name, COLUMN_TYPE AS type, IS_NULLABLE AS nullable, COLUMN_DEFAULT AS dflt, COLUMN_KEY AS ckey, EXTRA AS extra FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ${tableLit} ORDER BY ORDINAL_POSITION`),
+                query(ctx, `SELECT c.COLUMN_NAME AS name, c.COLUMN_TYPE AS type, c.COLUMN_COMMENT AS comment, c.IS_NULLABLE AS nullable, c.COLUMN_DEFAULT AS dflt, c.COLUMN_KEY AS ckey, c.EXTRA AS extra, t.ENGINE AS engine, ca.CHARACTER_SET_NAME AS charset, t.TABLE_COLLATION AS collation, t.TABLE_COMMENT AS table_comment FROM information_schema.COLUMNS c JOIN information_schema.TABLES t ON t.TABLE_SCHEMA = c.TABLE_SCHEMA AND t.TABLE_NAME = c.TABLE_NAME LEFT JOIN information_schema.COLLATION_CHARACTER_SET_APPLICABILITY ca ON ca.COLLATION_NAME = t.TABLE_COLLATION WHERE c.TABLE_SCHEMA = DATABASE() AND c.TABLE_NAME = ${tableLit} ORDER BY c.ORDINAL_POSITION`),
                 query(ctx, `SELECT INDEX_NAME AS name, NON_UNIQUE AS nonunique, COLUMN_NAME AS col, SEQ_IN_INDEX AS seq FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ${tableLit} ORDER BY INDEX_NAME, SEQ_IN_INDEX`),
-                query(ctx, `SELECT CONSTRAINT_NAME AS name, COLUMN_NAME AS col, REFERENCED_TABLE_NAME AS reftable, REFERENCED_COLUMN_NAME AS refcol FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ${tableLit} AND REFERENCED_TABLE_NAME IS NOT NULL`),
+                query(ctx, `SELECT k.CONSTRAINT_NAME AS name, k.COLUMN_NAME AS col, k.REFERENCED_TABLE_NAME AS reftable, k.REFERENCED_COLUMN_NAME AS refcol, r.UPDATE_RULE AS onupdate, r.DELETE_RULE AS ondelete FROM information_schema.KEY_COLUMN_USAGE k JOIN information_schema.REFERENTIAL_CONSTRAINTS r ON r.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA AND r.CONSTRAINT_NAME = k.CONSTRAINT_NAME AND r.TABLE_NAME = k.TABLE_NAME WHERE k.TABLE_SCHEMA = DATABASE() AND k.TABLE_NAME = ${tableLit} AND k.REFERENCED_TABLE_NAME IS NOT NULL ORDER BY k.CONSTRAINT_NAME, k.ORDINAL_POSITION`),
                 query(ctx, `SELECT TRIGGER_NAME AS name, ACTION_TIMING AS timing, EVENT_MANIPULATION AS event FROM information_schema.TRIGGERS WHERE EVENT_OBJECT_SCHEMA = DATABASE() AND EVENT_OBJECT_TABLE = ${tableLit}`),
             ]);
-            const columns = rowsAsObjects(cols).map((r) => ({
+            const columnRows = rowsAsObjects(cols);
+            const columns = columnRows.map((r) => ({
                 name: r.name,
                 type: r.type || "",
+                comment: r.comment,
                 nullable: r.nullable === "YES",
                 default: r.dflt,
                 isPk: r.ckey === "PRI",
@@ -127,15 +130,23 @@ export function makeMysqlDriver(engine, binaries) {
                     indexMap.set(r.name, { name: r.name, unique: r.nonunique === "0", columns: [] });
                 indexMap.get(r.name).columns.push(r.col);
             }
-            const foreignKeys = rowsAsObjects(fks).map((r) => ({ name: r.name, column: r.col, refTable: r.reftable, refColumn: r.refcol }));
+            const foreignKeys = rowsAsObjects(fks).map((r) => ({ name: r.name, column: r.col, refTable: r.reftable, refColumn: r.refcol, onUpdate: r.onupdate, onDelete: r.ondelete }));
             const triggers = rowsAsObjects(trg).map((r) => ({ name: r.name, definition: `${r.timing} ${r.event}` }));
+            const table = columnRows[0] || {};
+            const metadata = Object.fromEntries([
+                ["engine", table.engine],
+                ["charset", table.charset],
+                ["collation", table.collation],
+                ["comment", table.table_comment],
+            ].filter(([, value]) => value !== null && value !== undefined && value !== ""));
             return {
                 columns,
                 indexes: [...indexMap.values()],
                 foreignKeys,
                 triggers,
-                primaryKey: columns.filter((c) => c.isPk).map((c) => c.name),
+                primaryKey: indexMap.get("PRIMARY")?.columns || [],
                 rowid: null,
+                ...(Object.keys(metadata).length ? { metadata } : {}),
             };
         },
 

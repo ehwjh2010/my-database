@@ -75,7 +75,7 @@ async function tableInfoFor(session, target) {
     const key = target.workspaceKey;
     if (session.infoCache?.has(key))
         return session.infoCache.get(key);
-    return session.driver.tableInfo(target.driverContext, target.tableRef);
+    return session.coordinator.loadTableInfo(target.tableRef, target.driverContext);
 }
 
 function changesFor(session, target, info) {
@@ -86,15 +86,19 @@ function changesFor(session, target, info) {
 }
 
 function buildPage(info, changes, target, raw, started) {
-    const hiddenIndex = raw.columns.findIndex((column) => column.name === "__rowid");
-    const displayColumns = raw.columns.filter((_, index) => index !== hiddenIndex);
-    const typeByName = new Map(info.columns.map((column) => [column.name, column.type]));
-    for (const column of displayColumns)
-        column.type = typeByName.get(column.name) || "";
+    const resultColumns = raw.columns.length ? raw.columns : info.columns.map((column) => ({ name: column.name }));
+    const hiddenIndex = resultColumns.findIndex((column) => column.name === "__rowid");
+    const displayColumns = resultColumns.filter((_, index) => index !== hiddenIndex);
+    const infoByName = new Map(info.columns.map((column) => [column.name, column]));
+    for (const column of displayColumns) {
+        const infoColumn = infoByName.get(column.name);
+        column.type = infoColumn?.type || "";
+        column.comment = infoColumn?.comment;
+    }
     const displayRows = raw.rows.map((row) => row.filter((_, index) => index !== hiddenIndex));
     const editable = target.tableRef.kind !== "view" && isEditable(changes);
     const keyIndexes = editable
-        ? changes.keyColumns.map((column) => (column === "__rowid" ? hiddenIndex : raw.columns.findIndex((entry) => entry.name === column)))
+        ? changes.keyColumns.map((column) => (column === "__rowid" ? hiddenIndex : resultColumns.findIndex((entry) => entry.name === column)))
         : [];
     const keyValuesFor = (row) => keyIndexes.map((index) => raw.rows[row][index]);
     return {

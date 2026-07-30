@@ -43,7 +43,7 @@ async function copyText(text) {
 }
 
 export function DataView({ session, tableRef, workspaceId, setStatus }) {
-    const { notifyPendingChanges, refreshData } = useSession();
+    const { notifyPendingChanges, refreshData, columnFocus, consumeColumnFocus } = useSession();
     const coordinator = session.coordinator;
     const activeWorkspaceKey = objectCacheKey(tableRef);
     const runtime = dataRuntimeFor(session, activeWorkspaceKey, tableRef, undefined, workspaceId);
@@ -52,6 +52,8 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
     const [draftOrderBy, setDraftOrderBy] = useState(gridState.rawOrderBy);
     const [, bumpChanges] = useReducer((n) => n + 1, 0);
     const [editing, setEditing] = useState(null);
+    const [selectedCell, setSelectedCell] = useState(null);
+    const [scrollTarget, setScrollTarget] = useState(null);
     const [review, setReview] = useState(null);
     const [viewerValue, setViewerValue] = useState(undefined);
     const bumpPendingChanges = () => {
@@ -66,6 +68,22 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
             setStatus(`${tableRef.table} · ${page.displayRows.length} rows · ${page.elapsed}ms`);
     }, [page, tableRef, setStatus]);
 
+    useEffect(() => {
+        if (!columnFocus || columnFocus.workspaceId !== workspaceId || page.loading)
+            return;
+        setSelectedCell(null);
+        if (!page.error) {
+            const column = page.displayColumns.findIndex((entry) => entry.name === columnFocus.columnName);
+            if (column >= 0) {
+                const row = page.displayRows.length ? 0 : null;
+                if (row !== null)
+                    setSelectedCell({ row, column });
+                setScrollTarget({ token: columnFocus.token, row, column });
+            }
+        }
+        consumeColumnFocus(columnFocus.token);
+    }, [columnFocus, consumeColumnFocus, page, workspaceId]);
+
     const commitGrid = (patch) => {
         const next = { ...session.gridState.get(activeWorkspaceKey), ...gridState, ...patch };
         setGridState(next);
@@ -76,6 +94,8 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
         <FilterBar
             rawWhere={draftWhere}
             rawOrderBy={draftOrderBy}
+            columns={page.loading || page.error ? [] : page.displayColumns}
+            engine={session.conn.engine}
             initialRatio={gridState.querySplit}
             onWhereChange={setDraftWhere}
             onOrderByChange={setDraftOrderBy}
@@ -186,7 +206,11 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
                     editing={editing}
                     setEditing={setEditing}
                     onContextItems={contextItemsFor}
+                    onCopyColumnName={copyText}
                     onViewCell={(value) => setViewerValue(value)}
+                    selectedCell={selectedCell}
+                    onSelectCell={setSelectedCell}
+                    scrollTarget={scrollTarget}
                     sortDirections={sortDirections}
                     onSort={(column) => {
                         const rawOrderBy = nextOrderBy(session.conn.engine, draftOrderBy, column, page.displayColumns);
