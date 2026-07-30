@@ -1,0 +1,357 @@
+import { clearChanges } from "../grid/pending-changes.js";
+import { qualifiedName } from "../lib/sql/quote.js";
+import { clearDataRuntime, clearDataRuntimes, dataRuntimeFor, nextDataRequest, refreshDataRuntime } from "./data-runtime.js";
+import { initialWorkspaceState, objectCacheKey, pendingChangeCountFor, sameObjectRef, workspaceReducer } from "./workspace-state.js";
+
+export const WORKSPACE_VIEWS = Object.freeze(["data", "structure", "query"]);
+export const QUERY_MODES = Object.freeze(["execute", "explain"]);
+export const STRUCTURE_OPERATIONS = Object.freeze(["drop", "truncate"]);
+
+const STALE_WORKSPACE = { error: "STALE_WORKSPACE" };
+
+export function createWorkspaceCoordinator(session, adapters = {}) {
+    if (!session.registry)
+        session.registry = initialWorkspaceState;
+    session.workspaceIdCounter = session.workspaceIdCounter || 0;
+    session.workspaceGenerationCounter = session.workspaceGenerationCounter || 0;
+    session.catalogToken = session.catalogToken || 0;
+    session.scopeRequestToken = session.scopeRequestToken || 0;
+    session.catalogError = session.catalogError || null;
+    let registryRevision = 0;
+
+    const emit = () => {
+        registryRevision += 1;
+        adapters.notify?.(registryRevision);
+    };
+    const commit = (action) => {
+        session.registry = workspaceReducer(session.registry, action);
+        emit();
+    };
+    const entryById = (workspaceId) => session.registry.byId[workspaceId] || null;
+    const isCurrentEntry = (entry) => entryById(entry.id) === entry;
+    const captureOperationCtx = () => ({ ...session.ctx });
+    const ownershipFor = (entry) => ({ workspaceId: entry.id, scopeEpoch: session.scopeGeneration || 0, generation: entry.generation });
+    const clearWorkspaceRuntime = (key) => {
+        clearDataRuntime(session, key);
+        session.structureCache?.delete(key);
+        session.queryState?.delete(key);
+    };
+    const clearWindowRuntime = () => {
+        clearDataRuntimes(session);
+        session.structureCache?.clear();
+        session.infoCache?.clear();
+        session.queryState?.clear();
+        commit({ type: "CLEAR_ALL" });
+        adapters.notifyPending?.();
+        adapters.notifyData?.();
+    };
+    const clearScopeRuntime = () => {
+        session.tables = [];
+        session.columnsMap = {};
+        session.catalogError = null;
+        clearWindowRuntime();
+        adapters.notifyScope?.();
+        adapters.notifyCatalog?.();
+    };
+    const closeWorkspace = (entry) => {
+        clearWorkspaceRuntime(entry.key);
+        commit({ type: "CLOSE", id: entry.id });
+        adapters.notifyPending?.();
+        adapters.notifyData?.();
+        return { outcome: "closed", activeId: session.registry.activeId };
+    };
+
+    const coordinator = {
+        adapters,
+
+        get revision() {
+            return registryRevision;
+        },
+
+        getActive() {
+            return entryById(session.registry.activeId);
+        },
+
+        openOrActivate(objectRef) {
+            if (!objectRef?.table)
+                return { error: "INVALID_OBJECT_REF" };
+            const key = objectCacheKey(objectRef);
+            const existingId = session.registry.order.find((id) => session.registry.byId[id]?.key === key);
+            if (existingId !== undefined) {
+                commit({ type: "ACTIVATE", id: existingId });
+                return { workspaceId: existingId, created: false, activeId: session.registry.activeId };
+            }
+            const workspaceId = ++session.workspaceIdCounter;
+            const generation = ++session.workspaceGenerationCounter;
+            dataRuntimeFor(session, key, objectRef, undefined, workspaceId, generation);
+            if (!(session.queryState instanceof Map))
+                session.queryState = new Map();
+            session.queryState.set(key, { sql: `SELECT * FROM ${qualifiedName(session.conn.engine, objectRef)}`, results: null, exportContext: null });
+            commit({ type: "OPEN", id: workspaceId, key, generation, ref: objectRef });
+            return { workspaceId, created: true, activeId: session.registry.activeId };
+        },
+
+        setActive(workspaceId) {
+            if (!entryById(workspaceId))
+                return STALE_WORKSPACE;
+            commit({ type: "ACTIVATE", id: workspaceId });
+            return { activeId: session.registry.activeId };
+        },
+
+        close(workspaceId) {
+            const entry = entryById(workspaceId);
+            if (!entry)
+                return STALE_WORKSPACE;
+            const pendingCount = pendingChangeCountFor(session.changes, entry.key);
+            if (!pendingCount)
+                return closeWorkspace(entry);
+            return (async () => {
+                let choice;
+                try {
+                    choice = await adapters.confirm?.({
+                        title: "Discard pending changes?",
+                        message: `Closing ${entry.ref.table} will discard ${pendingCount} unapplied change${pendingCount === 1 ? "" : "s"}.`,
+                        buttons: ["Close", "Cancel"],
+                        cancel: "Cancel",
+                        style: "warning",
+                    });
+                }
+                catch {
+                    return { error: "CONFIRMATION_FAILED" };
+                }
+                if (choice !== "Close")
+                    return { outcome: "cancelled" };
+                if (!isCurrentEntry(entry))
+                    return STALE_WORKSPACE;
+                return closeWorkspace(entry);
+            })();
+        },
+
+        changeView(workspaceId, view) {
+            if (!WORKSPACE_VIEWS.includes(view))
+                return { error: "INVALID_VIEW" };
+            if (!entryById(workspaceId))
+                return STALE_WORKSPACE;
+            commit({ type: "SET_VIEW", id: workspaceId, view });
+            return { view, registryRevision };
+        },
+
+        onPendingChange(workspaceId) {
+            if (!entryById(workspaceId))
+                return STALE_WORKSPACE;
+            emit();
+            return { registryRevision };
+        },
+
+        async refreshData(workspaceId) {
+            const entry = entryById(workspaceId);
+            if (!entry)
+                return STALE_WORKSPACE;
+            if (pendingChangeCountFor(session.changes, entry.key) > 0) {
+                let choice;
+                try {
+                    choice = await adapters.confirm?.({
+                        title: "Discard pending changes?",
+                        message: "Refreshing Data will discard pending changes in this workspace.",
+                        buttons: ["Refresh", "Cancel"],
+                        cancel: "Cancel",
+                        style: "warning",
+                    });
+                }
+                catch {
+                    return { error: "CONFIRMATION_FAILED" };
+                }
+                if (choice !== "Refresh")
+                    return { outcome: "cancelled" };
+                if (!isCurrentEntry(entry))
+                    return STALE_WORKSPACE;
+                clearChanges(session.changes.get(entry.key));
+                adapters.notifyPending?.();
+            }
+            refreshDataRuntime(session, entry.key, entry.ref);
+            adapters.notifyData?.();
+            return { outcome: "started" };
+        },
+
+        async changeScope(nextScope) {
+            const scopeRequestToken = ++session.scopeRequestToken;
+            const target = { database: session.ctx.database, schema: session.ctx.schema };
+            if (nextScope.database !== undefined) {
+                target.database = nextScope.database;
+                target.schema = session.conn.engine === "postgres" ? "public" : "";
+            }
+            if (nextScope.schema !== undefined)
+                target.schema = nextScope.schema;
+            let dirtyWorkspaceCount = 0;
+            let totalChanges = 0;
+            for (const workspaceId of session.registry.order) {
+                const entry = session.registry.byId[workspaceId];
+                const count = pendingChangeCountFor(session.changes, entry.key);
+                if (count > 0) {
+                    dirtyWorkspaceCount += 1;
+                    totalChanges += count;
+                }
+            }
+            if (dirtyWorkspaceCount > 0) {
+                let choice;
+                try {
+                    choice = await adapters.confirm?.({
+                        title: "Discard pending changes?",
+                        message: `${totalChanges} unapplied change${totalChanges === 1 ? "" : "s"} will be lost when changing scope.`,
+                        buttons: ["Change Scope", "Cancel"],
+                        cancel: "Cancel",
+                        style: "warning",
+                    });
+                }
+                catch {
+                    return { error: "CONFIRMATION_FAILED" };
+                }
+                if (choice !== "Change Scope")
+                    return { outcome: "cancelled" };
+            }
+            if (session.scopeRequestToken !== scopeRequestToken)
+                return { outcome: "cancelled", stale: true };
+            session.ctx.database = target.database;
+            session.ctx.schema = target.schema;
+            session.scopeGeneration = (session.scopeGeneration || 0) + 1;
+            clearScopeRuntime();
+            const catalog = await coordinator.initiateCatalogLoad();
+            return { outcome: "committed", scopeEpoch: session.scopeGeneration, catalog };
+        },
+
+        async initiateCatalogLoad() {
+            session.catalogToken += 1;
+            const scopeEpoch = session.scopeGeneration || 0;
+            const catalogToken = session.catalogToken;
+            const operationCtx = captureOperationCtx();
+            session.infoCache?.clear();
+            let tables;
+            let columnsMap;
+            try {
+                [tables, columnsMap] = await Promise.all([
+                    session.driver.listTables(operationCtx),
+                    session.driver.allColumns(operationCtx),
+                ]);
+            }
+            catch (error) {
+                if ((session.scopeGeneration || 0) !== scopeEpoch || session.catalogToken !== catalogToken)
+                    return { operationCtx, scopeEpoch, catalogToken, stale: true, error };
+                session.catalogError = error;
+                adapters.notifyCatalog?.();
+                return { operationCtx, scopeEpoch, catalogToken, error };
+            }
+            if ((session.scopeGeneration || 0) !== scopeEpoch || session.catalogToken !== catalogToken)
+                return { operationCtx, scopeEpoch, catalogToken, stale: true };
+            session.tables = tables;
+            session.columnsMap = columnsMap;
+            session.catalogError = null;
+            adapters.notifyCatalog?.();
+            return { operationCtx, scopeEpoch, catalogToken };
+        },
+
+        initiateDataRead(workspaceId, gridParams) {
+            const entry = entryById(workspaceId);
+            if (!entry)
+                return STALE_WORKSPACE;
+            const runtime = dataRuntimeFor(session, entry.key, entry.ref);
+            const request = nextDataRequest(runtime, session);
+            return { operationCtx: captureOperationCtx(), objectRef: entry.ref, ownership: ownershipFor(entry), dataToken: request.token, gridParams };
+        },
+
+        initiateDataApply(workspaceId, statements) {
+            const entry = entryById(workspaceId);
+            if (!entry)
+                return STALE_WORKSPACE;
+            if (!statements?.length)
+                return { error: "INVALID_STATEMENTS" };
+            return { operationCtx: captureOperationCtx(), objectRef: entry.ref, ownership: ownershipFor(entry), statements };
+        },
+
+        initiateDataCount(workspaceId, gridParams) {
+            const entry = entryById(workspaceId);
+            if (!entry)
+                return STALE_WORKSPACE;
+            const owner = session.workspaceOwners.get(entry.key);
+            owner.dataCountRequest = (owner.dataCountRequest || 0) + 1;
+            return { operationCtx: captureOperationCtx(), objectRef: entry.ref, ownership: ownershipFor(entry), countToken: owner.dataCountRequest, gridParams };
+        },
+
+        initiateQueryExecute(workspaceId, sql, mode) {
+            const entry = entryById(workspaceId);
+            if (!entry)
+                return STALE_WORKSPACE;
+            if (!QUERY_MODES.includes(mode))
+                return { error: "INVALID_QUERY_MODE" };
+            if (!sql?.trim())
+                return { error: "INVALID_SQL" };
+            const owner = session.workspaceOwners.get(entry.key);
+            owner.queryRequest = (owner.queryRequest || 0) + 1;
+            return { operationCtx: captureOperationCtx(), objectRef: entry.ref, ownership: ownershipFor(entry), queryToken: owner.queryRequest, sql, mode };
+        },
+
+        initiateStructureRead(workspaceId) {
+            const entry = entryById(workspaceId);
+            if (!entry)
+                return STALE_WORKSPACE;
+            const owner = session.workspaceOwners.get(entry.key);
+            owner.structureRequest = (owner.structureRequest || 0) + 1;
+            return { operationCtx: captureOperationCtx(), objectRef: entry.ref, ownership: ownershipFor(entry), structureToken: owner.structureRequest };
+        },
+
+        initiateStructureWrite(workspaceId, sql, operation) {
+            const entry = entryById(workspaceId);
+            if (!entry)
+                return STALE_WORKSPACE;
+            if (!STRUCTURE_OPERATIONS.includes(operation))
+                return { error: "INVALID_STRUCTURE_OPERATION" };
+            if (!sql?.trim())
+                return { error: "INVALID_SQL" };
+            return { operationCtx: captureOperationCtx(), objectRef: entry.ref, ownership: ownershipFor(entry), sql, operation };
+        },
+
+        async onObjectDeleted(objectRef) {
+            const workspaceId = session.registry.order.find((id) => sameObjectRef(session.registry.byId[id]?.ref, objectRef));
+            if (workspaceId === undefined)
+                return { error: "INVALID_OBJECT_REF" };
+            const entry = session.registry.byId[workspaceId];
+            closeWorkspace(entry);
+            const catalog = await coordinator.initiateCatalogLoad();
+            return { closedWorkspaceId: workspaceId, activeId: session.registry.activeId, catalog };
+        },
+
+        async confirmWindowClose() {
+            let dirtyWorkspaceCount = 0;
+            let totalChanges = 0;
+            for (const workspaceId of session.registry.order) {
+                const entry = session.registry.byId[workspaceId];
+                const count = pendingChangeCountFor(session.changes, entry.key);
+                if (count > 0) {
+                    dirtyWorkspaceCount += 1;
+                    totalChanges += count;
+                }
+            }
+            if (!dirtyWorkspaceCount) {
+                clearWindowRuntime();
+                return { allowClose: true, dirtyWorkspaceCount: 0 };
+            }
+            let choice;
+            try {
+                choice = await adapters.confirm?.({
+                    title: "Discard pending changes?",
+                    message: `${totalChanges} unapplied change${totalChanges === 1 ? "" : "s"} will be lost.`,
+                    buttons: ["Discard & Close", "Cancel"],
+                    cancel: "Cancel",
+                    style: "warning",
+                });
+            }
+            catch {
+                return { allowClose: false, dirtyWorkspaceCount, error: "CONFIRMATION_FAILED" };
+            }
+            const allowClose = choice === "Discard & Close";
+            if (allowClose)
+                clearWindowRuntime();
+            return { allowClose, dirtyWorkspaceCount };
+        },
+    };
+    return coordinator;
+}
