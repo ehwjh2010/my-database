@@ -155,7 +155,7 @@ export function QueryView({ session, workspaceId, setStatus, queryHooksRef }) {
                     <button className="btn btn-compact" title="Explain the statement at the cursor" onClick={runExplain}>
                         Explain
                     </button>
-                    <span className="text-[var(--font-footnote)] text-muted-foreground">\u2318\u23ce statement \u00b7 \u21e7\u2318\u23ce all</span>
+                    <span className="text-[var(--font-footnote)] text-muted-foreground">{"\u2318\u23ce statement \u00b7 \u21e7\u2318\u23ce all"}</span>
                     <div className="flex-1" />
                     <button className="icon-btn" title="Export results as CSV" onClick={exportResults}>
                         <Icon name="download" />

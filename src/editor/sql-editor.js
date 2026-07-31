@@ -2,11 +2,18 @@ import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLi
 import { EditorState } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { sql, PostgreSQL, MySQL, MariaSQL, SQLite } from "@codemirror/lang-sql";
-import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
+import { acceptCompletion, autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap, pickedCompletion } from "@codemirror/autocomplete";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { muxyTheme } from "./editor-theme.js";
 
 const DIALECTS = { postgres: PostgreSQL, mysql: MySQL, mariadb: MariaSQL, sqlite: SQLite };
+const completionSpacing = EditorState.transactionFilter.of((transaction) => {
+    if (!transaction.annotation(pickedCompletion))
+        return transaction;
+    const cursor = transaction.newSelection.main.head;
+    const hasSpace = transaction.newDoc.sliceString(cursor, cursor + 1) === " ";
+    return [transaction, { changes: hasSpace ? undefined : { from: cursor, insert: " " }, selection: { anchor: cursor + 1 }, sequential: true }];
+});
 
 export function createSqlEditor(parent, { engine, doc = "", schema = {}, onRun, onRunAll, onDocChange }) {
     const view = new EditorView({
@@ -22,6 +29,7 @@ export function createSqlEditor(parent, { engine, doc = "", schema = {}, onRun, 
                 highlightSelectionMatches(),
                 closeBrackets(),
                 autocompletion(),
+                completionSpacing,
                 keymap.of([
                     { key: "Mod-Enter", run: () => (onRun ? (onRun(), true) : false) },
                     { key: "Shift-Mod-Enter", run: () => (onRunAll ? (onRunAll(), true) : false) },
@@ -30,6 +38,7 @@ export function createSqlEditor(parent, { engine, doc = "", schema = {}, onRun, 
                     ...historyKeymap,
                     ...searchKeymap,
                     ...completionKeymap,
+                    { key: "Tab", run: acceptCompletion },
                     indentWithTab,
                 ]),
                 sql({ dialect: DIALECTS[engine] || SQLite, schema, upperCaseKeywords: true }),

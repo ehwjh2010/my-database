@@ -6,7 +6,7 @@ import { ScopeSelects } from "./scope-selects.jsx";
 const VIEWS = [
     { id: "data", label: "Data", icon: "grid" },
     { id: "structure", label: "Structure", icon: "columns" },
-    { id: "query", label: "Query", icon: "code" },
+    { id: "query", label: "Console", icon: "code" },
 ];
 
 export function Topbar() {
