@@ -32,3 +32,19 @@ export function TransferMenuModal({ session, tableRef, onClose }) {
         </Modal>
     );
 }
+
+export function ExportMenuModal({ onClose, onExport }) {
+    const run = (format) => () => {
+        onClose();
+        void onExport(format);
+    };
+    return (
+        <Modal icon="download" title="Export result" size="sm" onClose={onClose}>
+            <div className="py-[var(--s3)]">
+                <MenuItem icon="download" label="Export result as CSV" onSelect={run("csv")} />
+                <MenuItem icon="download" label="Export result as JSON" onSelect={run("json")} />
+                <MenuItem icon="download" label="Export result as SQL INSERTs" onSelect={run("sql")} />
+            </div>
+        </Modal>
+    );
+}

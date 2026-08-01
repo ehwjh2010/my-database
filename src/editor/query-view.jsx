@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../ui/icon.jsx";
 import { Modal } from "../ui/modal.jsx";
-import { toast } from "../ui/toast.js";
 import { appendHistory } from "../lib/storage.js";
 import { querySql, insertSql } from "./sql-editor.js";
-import { exportResult } from "../transfer/transfer.js";
+import { exportActive } from "../transfer/transfer.js";
+import { ExportMenuModal } from "../transfer/transfer-menu.jsx";
 import { SqlEditorView } from "./sql-editor-view.jsx";
 import { Results } from "./results.jsx";
 import { HistoryPanel } from "./history-panel.jsx";
@@ -26,6 +26,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
     const [conflictBusy, setConflictBusy] = useState(false);
     const [conflictActionError, setConflictActionError] = useState(null);
     const [modalConflictVersion, setModalConflictVersion] = useState(null);
+    const [exportOpen, setExportOpen] = useState(false);
 
     const isSqlTab = sqlTabId != null;
     const tabId = isSqlTab ? sqlTabId : workspaceId;
@@ -187,14 +188,11 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
         return () => { queryHooksRef.current = null; };
     }, [queryHooksRef]);
 
-    const exportResults = async () => {
-        const context = stateMap.get(key)?.exportContext;
-        if (!context?.result) {
-            toast("No result rows to export", "warning");
-            return;
-        }
-        await exportResult(session.conn.engine, context.objectRef, context.result, "csv");
+    const exportResults = async (format) => {
+        await exportActive(session, format);
     };
+
+    const canExport = Boolean(qs.exportContext?.result?.columns?.length);
 
     const togglePanel = (kind) => setPanel((prev) => (prev === kind ? null : kind));
 
@@ -210,7 +208,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                         Explain
                     </button>
                     <div className="flex-1" />
-                    <button className="icon-btn" title="Export results as CSV" onClick={exportResults}>
+                    <button className="icon-btn" title="Export results" disabled={!canExport || qs.queryRunning} onClick={() => setExportOpen(true)}>
                         <Icon name="download" />
                     </button>
                     <button className="icon-btn" title="Query history" onClick={() => togglePanel("history")}>
@@ -275,6 +273,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                     />
                 </div>
             ) : null}
+            {exportOpen ? <ExportMenuModal onClose={() => setExportOpen(false)} onExport={exportResults} /> : null}
         </div>
     );
 }
