@@ -1,14 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../ui/icon.jsx";
 import { Modal } from "../ui/modal.jsx";
-import { appendHistory } from "../lib/storage.js";
-import { querySql, insertSql } from "./sql-editor.js";
+import { querySql } from "./sql-editor.js";
 import { exportActive } from "../transfer/transfer.js";
 import { ExportMenuModal } from "../transfer/transfer-menu.jsx";
 import { SqlEditorView } from "./sql-editor-view.jsx";
 import { Results } from "./results.jsx";
-import { HistoryPanel } from "./history-panel.jsx";
-import { SavedPanel } from "./saved-panel.jsx";
 import { commitQueryError, commitQueryResult, isCurrentQueryRequest } from "../workbench/query-runtime.js";
 
 export function schemaForCompletion(session) {
@@ -20,8 +17,6 @@ export function schemaForCompletion(session) {
 
 export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHooksRef }) {
     const editorRef = useRef(null);
-    const [panel, setPanel] = useState(null);
-    const [historyToken, setHistoryToken] = useState(0);
     const [conflictOpen, setConflictOpen] = useState(false);
     const [conflictBusy, setConflictBusy] = useState(false);
     const [conflictActionError, setConflictActionError] = useState(null);
@@ -86,8 +81,6 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                 return;
             }
             setStatus(isExplain ? "Explaining\u2026" : "Running\u2026");
-            const started = Date.now();
-            try {
             let data;
             try {
                 data = isExplain
@@ -99,8 +92,6 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                 if (isActive()) {
                     setStatus("Error");
                 }
-                if (!isSqlTab && !isExplain && isCurrentQueryRequest(session, snapshot))
-                    await appendHistory(session.conn.id, { id: String(started), sql: snapshot.sql.slice(0, 4096), startedAt: started, durationMs: Date.now() - started, ok: false });
                 return;
             }
             if (!commitQueryResult(session, snapshot, data))
@@ -109,13 +100,6 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
             const duration = data.reduce((sum, r) => sum + (r.durationMs || 0), 0);
             if (isActive()) {
                 setStatus(`Done \u00b7 ${rows} rows \u00b7 ${duration}ms`);
-            }
-            if (!isSqlTab && !isExplain && isCurrentQueryRequest(session, snapshot))
-                await appendHistory(session.conn.id, { id: String(started), sql: snapshot.sql.slice(0, 4096), startedAt: started, durationMs: duration, ok: true, rows });
-            } finally {
-                if (isCurrentQueryRequest(session, snapshot) && isActive()) {
-                    setHistoryToken((n) => n + 1);
-                }
             }
         },
         [key, session, setStatus, stateMap, tabId],
@@ -194,8 +178,6 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
 
     const canExport = Boolean(qs.exportContext?.result?.columns?.length);
 
-    const togglePanel = (kind) => setPanel((prev) => (prev === kind ? null : kind));
-
     return (
         <div className="flex min-h-0 flex-1">
             <div className="flex min-w-0 flex-1 flex-col">
@@ -211,14 +193,6 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                     <button className="icon-btn" title="Export results" disabled={!canExport || qs.queryRunning} onClick={() => setExportOpen(true)}>
                         <Icon name="download" />
                     </button>
-                    <button className="icon-btn" title="Query history" onClick={() => togglePanel("history")}>
-                        <Icon name="clock" />
-                    </button>
-                    {!isSqlTab ? (
-                        <button className="icon-btn" title="Saved queries" onClick={() => togglePanel("saved")}>
-                            <Icon name="star" />
-                        </button>
-                    ) : null}
                 </div>
                 {saveFailed || externalConflict ? (
                     <div className={`save-feedback ${externalConflict ? "external-conflict" : "save-failed"}`} data-testid="sql-save-feedback" data-save-state={externalConflict ? "externalConflict" : "saveFailed"} role="alert">
@@ -261,18 +235,6 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                     <Results results={qs.results?.results} error={qs.queryError} />
                 </div>
             </div>
-            {panel === "history" ? (
-                <HistoryPanel session={session} refreshToken={historyToken} onPick={(sql) => insertSql(editorRef.current, sql)} />
-            ) : null}
-            {panel === "saved" && !isSqlTab ? (
-                <div className="w-[var(--side-panel-width)] flex-shrink-0 border-l" style={{ borderColor: "var(--muxy-border)" }}>
-                    <SavedPanel
-                        session={session}
-                        onPick={(sql) => insertSql(editorRef.current, sql)}
-                        getCurrentSql={() => querySql(editorRef.current)}
-                    />
-                </div>
-            ) : null}
             {exportOpen ? <ExportMenuModal onClose={() => setExportOpen(false)} onExport={exportResults} /> : null}
         </div>
     );
