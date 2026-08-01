@@ -41,7 +41,7 @@ export function sqlFileMenuItems({ files = [], order = [], byId = {}, onCreate, 
     return [
         { label: "New SQL File...", onClick: onCreate },
         ...files
-            .filter((file) => !file.reserved && !openNames.has(file.name))
+            .filter((file) => !openNames.has(file.name))
             .map((file) => ({ label: file.name, onClick: () => onOpen?.(file) })),
     ];
 }

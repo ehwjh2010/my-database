@@ -302,7 +302,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             const entry = sqlEntryById(sqlTabId);
             if (!entry)
                 return { error: "QUERY_TAB_REQUIRED" };
-            if (entry.reserved)
+            if (entry.reserved || entry.name?.toLowerCase() === "console.sql")
                 return { error: "FILE_RESERVED" };
             const name = validateFileName(rawName);
             const api = filesApi();
@@ -325,7 +325,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             const entry = sqlEntryById(sqlTabId);
             if (!entry)
                 return { error: "QUERY_TAB_REQUIRED" };
-            if (entry.reserved)
+            if (entry.reserved || entry.name?.toLowerCase() === "console.sql")
                 return { error: "FILE_RESERVED" };
             let choice;
             try {

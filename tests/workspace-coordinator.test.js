@@ -1399,6 +1399,42 @@ test("renaming an SQL tab updates file and tab metadata while preserving runtime
     assert.deepEqual(session.consoleState.files.map((file) => file.name), ["renamed.sql"]);
 });
 
+test("coordinator reserves console.sql by name even when file metadata is untrusted", async () => {
+    const version = { sha256: "hash", size: 9, mtimeMs: 4 };
+    const session = stubSession({
+        conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } },
+        sqlNamespace: { databaseDir: "/tmp/sql", fingerprint: "fingerprint", databaseKey: "fingerprint" },
+        sqlFiles: [{ name: "console.sql", path: "/tmp/sql/console.sql", size: 9, mtimeMs: 4, reserved: false }],
+        consoleState: { phase: "ready", files: [], error: null },
+    });
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({
+        confirm: () => { throw new Error("confirmation should not be requested"); },
+        sqlFiles: {
+            async readSqlFile() {
+                return { content: "SELECT 1;", version };
+            },
+            async renameSqlFile() {
+                throw new Error("rename should not be called");
+            },
+            async trashSqlFile() {
+                throw new Error("trash should not be called");
+            },
+        },
+    }));
+
+    const opened = await coordinator.openSqlFile("console.sql");
+    const entry = session.sqlRegistry.byId[opened.sqlTabId];
+    const state = session.sqlState.get(entry.key);
+    state.sql = "SELECT 2;";
+    state.results = { rows: [{ id: 1 }] };
+
+    assert.deepEqual(await coordinator.renameSqlFile(opened.sqlTabId, "renamed.sql"), { error: "FILE_RESERVED" });
+    assert.deepEqual(await coordinator.trashSqlFile(opened.sqlTabId), { error: "FILE_RESERVED" });
+    assert.equal(session.sqlRegistry.byId[opened.sqlTabId], entry);
+    assert.equal(state.sql, "SELECT 2;");
+    assert.deepEqual(state.results, { rows: [{ id: 1 }] });
+});
+
 test("cancelling SQL Trash preserves the tab and confirming closes it after the file API succeeds", async () => {
     const version = { sha256: "hash", size: 9, mtimeMs: 4 };
     const confirmations = ["Cancel", "Delete"];

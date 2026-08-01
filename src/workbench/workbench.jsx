@@ -22,7 +22,7 @@ function fileErrorMessage(error) {
     return {
         FILE_NAME_EMPTY: "Enter a file name.",
         FILE_NAME_INVALID: "File names cannot contain NUL or slash.",
-        FILE_RESERVED: "console.sql is protected.",
+        FILE_RESERVED: "console.sql 不能重命名或删除",
         FILE_EXISTS: "A SQL file with this name already exists.",
         FILE_NOT_FOUND: "The SQL file is no longer available.",
         FILE_VERSION_CONFLICT: "The SQL file changed outside Muxy. Reload it before renaming or deleting.",
@@ -82,7 +82,7 @@ export function Workbench() {
 
     const openRenameFile = (tab) => {
         const entry = session.sqlRegistry.byId[tab.id];
-        if (!entry || entry.reserved)
+        if (!entry || entry.reserved || entry.name?.toLowerCase() === "console.sql")
             return;
         setRenameFile({ id: tab.id, name: entry.name });
         setRenameFileError(null);
@@ -128,7 +128,7 @@ export function Workbench() {
     const tabMenuItems = surface === "console" && consolePhase === "ready"
         ? (tab) => {
             const entry = session.sqlRegistry.byId[tab.id];
-            if (!entry || entry.reserved)
+            if (!entry || entry.reserved || entry.name?.toLowerCase() === "console.sql")
                 return [];
             return [
                 { label: "Rename...", onClick: () => openRenameFile(tab) },

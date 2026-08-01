@@ -42,6 +42,21 @@ test("SQL file names stay flat and protect console.sql", () => {
     assert.equal(filePath({ databaseDir: "/tmp/sql" }, "query.sql"), "/tmp/sql/query.sql");
 });
 
+test("rename and trash reject every case variant of console.sql with the reserved error", async () => {
+    const namespace = { rootDir: "/tmp/root", fingerprint: "fingerprint", databaseKey: "db-key", databaseDir: "/tmp/root/fingerprint/db-key" };
+
+    await assert.rejects(renameSqlFile(namespace, "CONSOLE.SQL", "renamed.sql", { sha256: "hash" }), (error) => {
+        assert.equal(error.code, "FILE_RESERVED");
+        assert.match(error.message, /console\.sql 不能重命名或删除/);
+        return true;
+    });
+    await assert.rejects(trashSqlFile(namespace, "Console.sql", { sha256: "hash" }), (error) => {
+        assert.equal(error.code, "FILE_RESERVED");
+        assert.match(error.message, /console\.sql 不能重命名或删除/);
+        return true;
+    });
+});
+
 test("ensureConsoleFile creates a private empty file without overwriting it", async () => {
     const base = await realpath(await mkdtemp(join(tmpdir(), "muxy-sql-files-")));
     const rootDir = join(base, "root");

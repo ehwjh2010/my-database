@@ -471,9 +471,9 @@ export function validateFileName(input, { allowReserved = false } = {}) {
         throw new SqlFileError("FILE_NAME_EMPTY");
     if (input.includes("\0") || input.includes("/"))
         throw new SqlFileError("FILE_NAME_INVALID", "file names cannot contain NUL or slash");
-    const name = input.endsWith(".sql") ? input : `${input}.sql`;
+    const name = input.toLowerCase().endsWith(".sql") ? input : `${input}.sql`;
     if (!allowReserved && name.toLowerCase() === "console.sql")
-        throw new SqlFileError("FILE_RESERVED", "console.sql is protected");
+        throw new SqlFileError("FILE_RESERVED", "console.sql 不能重命名或删除");
     return name;
 }
 

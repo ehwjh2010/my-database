@@ -74,7 +74,7 @@ test("workspaceSwitchMenuItems is empty when no workspace is open", () => {
     assert.deepEqual(workspaceSwitchMenuItems({ order: [], byId: {}, onActivate: () => {} }), []);
 });
 
-test("sqlFileMenuItems includes create and only unopened regular files", () => {
+test("sqlFileMenuItems includes create and unopened files, including console.sql", () => {
     const opened = [];
     const items = sqlFileMenuItems({
         order: [4],
@@ -88,10 +88,10 @@ test("sqlFileMenuItems includes create and only unopened regular files", () => {
         onOpen: (file) => opened.push(file.name),
     });
 
-    assert.deepEqual(items.map((item) => item.label), ["New SQL File...", "saved.sql"]);
+    assert.deepEqual(items.map((item) => item.label), ["New SQL File...", "console.sql", "saved.sql"]);
     items[0].onClick();
     items[1].onClick();
-    assert.deepEqual(opened, ["create", "saved.sql"]);
+    assert.deepEqual(opened, ["create", "console.sql"]);
 });
 
 test("projectWorkspaceTabs renders SQL tabs with code icons and no dirty state", () => {
