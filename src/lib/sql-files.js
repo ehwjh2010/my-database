@@ -141,12 +141,29 @@ close($fh) or fail("FILE_WRITE_FAILED", $path . ": " . $!);
 print encode_json(meta($name, $path));
 `;
 const READ_SCRIPT = String.raw`
+use Cwd qw(realpath);
 use Encode qw(decode FB_CROAK);
 use Fcntl qw(:mode);
 use Digest::SHA qw(sha256_hex);
 use JSON::PP qw(encode_json);
 sub fail { die $_[0] . ": " . $_[1] . "\n"; }
-my $path = $ARGV[0];
+sub check_dir {
+    my ($path) = @_;
+    my @st = lstat($path) or fail("FILE_PERMISSION_FAILED", $path . ": " . $!);
+    fail("FILE_UNSAFE_TYPE", $path . " is a symlink") if S_ISLNK($st[2]);
+    fail("FILE_UNSAFE_TYPE", $path . " is not a directory") unless S_ISDIR($st[2]);
+    fail("FILE_PERMISSION_FAILED", $path . " owner mismatch") if $st[4] != $<;
+    chmod(0700, $path) or fail("FILE_PERMISSION_FAILED", $path . ": " . $!);
+    @st = lstat($path) or fail("FILE_PERMISSION_FAILED", $path . ": " . $!);
+    fail("FILE_UNSAFE_TYPE", $path . " changed to a symlink") if S_ISLNK($st[2]);
+    fail("FILE_PERMISSION_FAILED", $path . " mode is not 0700") unless ($st[2] & 07777) == 0700;
+}
+my ($rootDir, $fingerprintDir, $databaseDir, $path) = @ARGV;
+check_dir($rootDir);
+check_dir($fingerprintDir);
+check_dir($databaseDir);
+my $real = realpath($databaseDir);
+fail("FILE_UNSAFE_TYPE", $databaseDir . " is outside its real path") unless defined($real) && $real eq $databaseDir;
 my @st = lstat($path) or fail("FILE_NOT_FOUND", $path . ": " . $!);
 fail("FILE_UNSAFE_TYPE", $path . " is a symlink") if S_ISLNK($st[2]);
 fail("FILE_UNSAFE_TYPE", $path . " is not a regular file") unless S_ISREG($st[2]);
@@ -458,7 +475,7 @@ export async function getSqlNamespace({ conn, database }) {
     }
     else {
         const net = conn.net;
-        fingerprint = await sha256(JSON.stringify(["v1", conn.engine, String(net.host), String(net.port), String(net.user)]));
+        fingerprint = await sha256(JSON.stringify(["v1", conn.engine, String(net.host).toLowerCase(), String(net.port), String(net.user)]));
         databaseKey = `db-${await sha256(database)}`;
     }
     const fingerprintDir = joinPath(rootDir, fingerprint);
@@ -555,7 +572,7 @@ export async function readSqlFile(namespace, input) {
     const { rootDir, fingerprintDir, databaseDir } = namespacePaths(namespace);
     const name = validateFileName(input, { allowReserved: true });
     const path = filePath(namespace, name);
-    const output = await execute(["perl", "-MDigest::SHA=sha256_hex", "-MJSON::PP=encode_json", "-e", READ_SCRIPT, path], "FILE_READ_FAILED");
+    const output = await execute(["perl", "-MDigest::SHA=sha256_hex", "-MJSON::PP=encode_json", "-e", READ_SCRIPT, rootDir, fingerprintDir, databaseDir, path], "FILE_READ_FAILED");
     return parseJson(output, "FILE_READ_FAILED");
 }
 

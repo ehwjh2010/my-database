@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import test from "node:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,9 +14,17 @@ globalThis.muxy = {
         calls.push(argv);
         return execHandler(argv);
     },
+    storage: {
+        get: async (key) => storageValues.get(key),
+        set: async (key, value) => storageValues.set(key, value),
+        delete: async (key) => storageValues.delete(key),
+    },
 };
 
 const { createSqlFile, ensureConsoleFile, getSqlNamespace, listSqlFiles, readSqlFile, renameSqlFile, saveSqlFile, trashSqlFile, validateFileName, filePath } = await import("../src/lib/sql-files.js");
+const { deleteConnection } = await import("../src/lib/connections.js");
+
+const storageValues = new Map();
 
 test("network SQL namespace uses the connection identity and database key", async () => {
     calls.length = 0;
@@ -24,7 +32,7 @@ test("network SQL namespace uses the connection identity and database key", asyn
         conn: { engine: "postgres", net: { host: "DB.Example", port: 5432, user: "alice" } },
         database: "sales",
     });
-    const fingerprint = createHash("sha256").update(JSON.stringify(["v1", "postgres", "DB.Example", "5432", "alice"])).digest("hex");
+    const fingerprint = createHash("sha256").update(JSON.stringify(["v1", "postgres", "db.example", "5432", "alice"])).digest("hex");
     const databaseKey = createHash("sha256").update("sales").digest("hex");
 
     assert.equal(namespace.fingerprint, fingerprint);
@@ -32,6 +40,158 @@ test("network SQL namespace uses the connection identity and database key", asyn
     assert.equal(namespace.databaseKey, `db-${databaseKey}`);
     assert.equal(namespace.databaseDir, `${namespace.rootDir}/${fingerprint}/db-${databaseKey}`);
     assert.equal(calls.length, 1);
+});
+
+test("network namespace identity ignores presentation and credential settings", async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "muxy-sql-identity-")));
+    execHandler = async (argv) => argv[2]?.includes("getpwuid")
+        ? { exitCode: 0, stdout: `${base}\n`, stderr: "" }
+        : { exitCode: 0, stdout: "", stderr: "" };
+
+    try {
+        const first = await getSqlNamespace({
+            conn: { engine: "mysql", name: "Production", net: { host: "DB.Example", port: 3306, user: "alice", sslMode: "require" }, password: "one", ssh: { enabled: true, host: "jump" }, tunnel: { localPort: 4100 } },
+            database: "sales",
+        });
+        const second = await getSqlNamespace({
+            conn: { engine: "mysql", name: "Renamed", net: { host: "db.example", port: "3306", user: "alice", sslMode: "disabled" }, password: "two", ssh: { enabled: false }, tunnel: { localPort: 4200 } },
+            database: "sales",
+        });
+
+        assert.equal(first.fingerprint, second.fingerprint);
+        assert.equal(first.databaseKey, second.databaseKey);
+    }
+    finally {
+        execHandler = async () => ({ exitCode: 0, stdout: "/Users/test-user\n", stderr: "" });
+        await rm(base, { recursive: true, force: true });
+    }
+});
+
+test("the same network identity reuses files while users stay isolated", async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "muxy-sql-reuse-")));
+    execHandler = (argv) => argv[2]?.includes("getpwuid")
+        ? Promise.resolve({ exitCode: 0, stdout: `${base}\n`, stderr: "" })
+        : new Promise((resolve, reject) => {
+            const child = spawn(argv[0], argv.slice(1));
+            let stdout = "";
+            let stderr = "";
+            child.stdout.on("data", (chunk) => stdout += chunk);
+            child.stderr.on("data", (chunk) => stderr += chunk);
+            child.on("error", reject);
+            child.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+        });
+
+    try {
+        const alice = await getSqlNamespace({ conn: { engine: "postgres", net: { host: "DB.Example", port: 5432, user: "alice" } }, database: "sales" });
+        const reopened = await getSqlNamespace({ conn: { engine: "postgres", net: { host: "db.example", port: 5432, user: "alice" } }, database: "sales" });
+        const bob = await getSqlNamespace({ conn: { engine: "postgres", net: { host: "db.example", port: 5432, user: "bob" } }, database: "sales" });
+        const renamedHost = await getSqlNamespace({ conn: { engine: "postgres", net: { host: "other.example", port: 5432, user: "alice" } }, database: "sales" });
+        await ensureConsoleFile(alice);
+        await ensureConsoleFile(bob);
+        await ensureConsoleFile(renamedHost);
+        const file = await createSqlFile(alice, "reused");
+
+        assert.equal(reopened.databaseDir, alice.databaseDir);
+        assert.notEqual(bob.databaseDir, alice.databaseDir);
+        assert.notEqual(renamedHost.databaseDir, alice.databaseDir);
+        assert.deepEqual((await listSqlFiles(reopened)).map(({ name }) => name), ["console.sql", "reused.sql"]);
+        assert.deepEqual((await listSqlFiles(bob)).map(({ name }) => name), ["console.sql"]);
+        assert.deepEqual((await listSqlFiles(renamedHost)).map(({ name }) => name), ["console.sql"]);
+        assert.equal(file.name, "reused.sql");
+    }
+    finally {
+        execHandler = async () => ({ exitCode: 0, stdout: "/Users/test-user\n", stderr: "" });
+        await rm(base, { recursive: true, force: true });
+    }
+});
+
+test("deleting a saved connection leaves its SQL namespace intact", async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "muxy-sql-retention-")));
+    execHandler = (argv) => argv[2]?.includes("getpwuid")
+        ? Promise.resolve({ exitCode: 0, stdout: `${base}\n`, stderr: "" })
+        : new Promise((resolve, reject) => {
+            const child = spawn(argv[0], argv.slice(1));
+            let stdout = "";
+            let stderr = "";
+            child.stdout.on("data", (chunk) => stdout += chunk);
+            child.stderr.on("data", (chunk) => stderr += chunk);
+            child.on("error", reject);
+            child.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+        });
+
+    try {
+        const namespace = await getSqlNamespace({ conn: { engine: "mysql", net: { host: "db.example", port: 3306, user: "alice" } }, database: "sales" });
+        await ensureConsoleFile(namespace);
+        const file = await createSqlFile(namespace, "retained");
+        storageValues.set("connections:v1", [{ id: "connection-1" }]);
+        await deleteConnection("connection-1");
+
+        assert.equal(await readFile(file.path, "utf8"), "");
+    }
+    finally {
+        storageValues.clear();
+        execHandler = async () => ({ exitCode: 0, stdout: "/Users/test-user\n", stderr: "" });
+        await rm(base, { recursive: true, force: true });
+    }
+});
+
+test("SQLite namespace follows the absolute database path", async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "muxy-sqlite-namespace-")));
+    const oldPath = join(base, "old.sqlite");
+    const newPath = join(base, "new.sqlite");
+    await writeFile(oldPath, "");
+    execHandler = (argv) => argv[2]?.includes("getpwuid")
+        ? Promise.resolve({ exitCode: 0, stdout: `${base}\n`, stderr: "" })
+        : new Promise((resolve, reject) => {
+            const child = spawn(argv[0], argv.slice(1));
+            let stdout = "";
+            let stderr = "";
+            child.stdout.on("data", (chunk) => stdout += chunk);
+            child.stderr.on("data", (chunk) => stderr += chunk);
+            child.on("error", reject);
+            child.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+        });
+
+    try {
+        const oldNamespace = await getSqlNamespace({ conn: { engine: "sqlite", sqlite: { path: oldPath } }, database: "main" });
+        await rename(oldPath, newPath);
+        const newNamespace = await getSqlNamespace({ conn: { engine: "sqlite", sqlite: { path: newPath } }, database: "main" });
+        assert.notEqual(newNamespace.fingerprint, oldNamespace.fingerprint);
+        assert.notEqual(newNamespace.databaseDir, oldNamespace.databaseDir);
+    }
+    finally {
+        execHandler = async () => ({ exitCode: 0, stdout: "/Users/test-user\n", stderr: "" });
+        await rm(base, { recursive: true, force: true });
+    }
+});
+
+test("reading SQL files rejects unsafe namespace directories", async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "muxy-sql-boundary-")));
+    const rootDir = join(base, "root");
+    const fingerprintDir = join(rootDir, "fingerprint");
+    const databaseDir = join(fingerprintDir, "db-key");
+    const outsideDir = join(base, "outside");
+    await mkdir(fingerprintDir, { recursive: true, mode: 0o700 });
+    await mkdir(outsideDir, { mode: 0o700 });
+    await writeFile(join(outsideDir, "draft.sql"), "SELECT outside;");
+    await symlink(outsideDir, databaseDir);
+    execHandler = (argv) => new Promise((resolve, reject) => {
+        const child = spawn(argv[0], argv.slice(1));
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (chunk) => stdout += chunk);
+        child.stderr.on("data", (chunk) => stderr += chunk);
+        child.on("error", reject);
+        child.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+    });
+
+    try {
+        await assert.rejects(readSqlFile({ rootDir, fingerprint: "fingerprint", databaseKey: "db-key", databaseDir }, "draft.sql"), { code: "FILE_UNSAFE_TYPE" });
+    }
+    finally {
+        execHandler = async () => ({ exitCode: 0, stdout: "/Users/test-user\n", stderr: "" });
+        await rm(base, { recursive: true, force: true });
+    }
 });
 
 test("SQL file names stay flat and protect console.sql", () => {
