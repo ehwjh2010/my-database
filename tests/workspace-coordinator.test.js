@@ -1525,6 +1525,106 @@ test("external SQL file changes enter conflict state and pause debounce retries"
     assert.equal(state.saveError, conflict);
 });
 
+test("SQL conflict captures the disk version and reload restores automatic saves", async () => {
+    const observedVersion = { sha256: "observed", size: 9, mtimeMs: 4 };
+    const conflictVersion = { sha256: "external", size: 15, mtimeMs: 5 };
+    const savedVersion = { sha256: "saved", size: 14, mtimeMs: 6 };
+    const conflict = Object.assign(new Error("FILE_VERSION_CONFLICT: saved.sql"), { code: "FILE_VERSION_CONFLICT" });
+    let reads = 0;
+    let saves = 0;
+    const session = stubSession({
+        conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } },
+        sqlNamespace: { databaseDir: "/tmp/sql", fingerprint: "fingerprint", databaseKey: "fingerprint" },
+        sqlFiles: [{ name: "saved.sql", path: "/tmp/sql/saved.sql", size: 9, mtimeMs: 4, reserved: false }],
+        consoleState: { phase: "ready", files: [], error: null },
+    });
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({
+        sqlFiles: {
+            async readSqlFile() {
+                reads += 1;
+                return reads === 1 ? { content: "SELECT 1;", version: observedVersion } : { content: "SELECT outside;", version: conflictVersion };
+            },
+            async saveSqlFile(namespace, name, content, expected) {
+                saves += 1;
+                if (saves === 1)
+                    throw conflict;
+                assert.deepEqual(expected, conflictVersion);
+                assert.equal(content, "SELECT outside;");
+                return { version: savedVersion };
+            },
+        },
+    }));
+
+    const opened = await coordinator.openSqlFile("saved.sql");
+    const entry = session.sqlRegistry.byId[opened.sqlTabId];
+    const state = session.sqlState.get(entry.key);
+    coordinator.updateSqlDraft(opened.sqlTabId, "SELECT draft;");
+    await new Promise((resolve) => setTimeout(resolve, 550));
+
+    assert.deepEqual(state.conflictVersion, conflictVersion);
+    assert.equal(state.sql, "SELECT draft;");
+    assert.equal(state.externalConflict, true);
+
+    await coordinator.reloadSqlFile(opened.sqlTabId);
+
+    assert.equal(state.sql, "SELECT outside;");
+    assert.deepEqual(state.observedVersion, conflictVersion);
+    assert.equal(state.dirty, false);
+    assert.equal(state.externalConflict, false);
+    assert.equal(state.conflictVersion, null);
+
+    coordinator.updateSqlDraft(opened.sqlTabId, "SELECT outside;");
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    assert.equal(saves, 2);
+    assert.equal(session.sqlRegistry.byId[opened.sqlTabId].externalConflict, false);
+});
+
+test("SQL conflict overwrite uses its captured version and reports a newer conflict", async () => {
+    const observedVersion = { sha256: "observed", size: 9, mtimeMs: 4 };
+    const conflictVersion = { sha256: "external", size: 15, mtimeMs: 5 };
+    const newerConflictVersion = { sha256: "newer", size: 14, mtimeMs: 6 };
+    const conflict = Object.assign(new Error("FILE_VERSION_CONFLICT: saved.sql"), { code: "FILE_VERSION_CONFLICT" });
+    let reads = 0;
+    let saves = 0;
+    const session = stubSession({
+        conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } },
+        sqlNamespace: { databaseDir: "/tmp/sql", fingerprint: "fingerprint", databaseKey: "fingerprint" },
+        sqlFiles: [{ name: "saved.sql", path: "/tmp/sql/saved.sql", size: 9, mtimeMs: 4, reserved: false }],
+        consoleState: { phase: "ready", files: [], error: null },
+    });
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({
+        sqlFiles: {
+            async readSqlFile() {
+                reads += 1;
+                return reads === 1 ? { content: "SELECT 1;", version: observedVersion } : reads === 2 ? { content: "SELECT outside;", version: conflictVersion } : { content: "SELECT changed again;", version: newerConflictVersion };
+            },
+            async saveSqlFile(namespace, name, content, expected) {
+                saves += 1;
+                assert.equal(content, "SELECT draft;");
+                if (saves === 1) {
+                    assert.deepEqual(expected, observedVersion);
+                    throw conflict;
+                }
+                assert.deepEqual(expected, conflictVersion);
+                throw conflict;
+            },
+        },
+    }));
+
+    const opened = await coordinator.openSqlFile("saved.sql");
+    const entry = session.sqlRegistry.byId[opened.sqlTabId];
+    const state = session.sqlState.get(entry.key);
+    coordinator.updateSqlDraft(opened.sqlTabId, "SELECT draft;");
+    await new Promise((resolve) => setTimeout(resolve, 550));
+
+    await assert.rejects(coordinator.overwriteSqlFile(opened.sqlTabId, conflictVersion), { code: "FILE_VERSION_CONFLICT" });
+
+    assert.equal(state.sql, "SELECT draft;");
+    assert.equal(state.dirty, true);
+    assert.equal(state.externalConflict, true);
+    assert.deepEqual(state.conflictVersion, newerConflictVersion);
+});
+
 test("renaming an SQL tab updates file and tab metadata while preserving runtime state", async () => {
     const version = { sha256: "hash", size: 9, mtimeMs: 4 };
     const session = stubSession({

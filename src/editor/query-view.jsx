@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../ui/icon.jsx";
+import { Modal } from "../ui/modal.jsx";
 import { toast } from "../ui/toast.js";
 import { appendHistory } from "../lib/storage.js";
 import { statementAt } from "../lib/sql/statement-split.js";
@@ -23,6 +24,10 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
     const [panel, setPanel] = useState(null);
     const [running, setRunning] = useState(false);
     const [historyToken, setHistoryToken] = useState(0);
+    const [conflictOpen, setConflictOpen] = useState(false);
+    const [conflictBusy, setConflictBusy] = useState(false);
+    const [conflictActionError, setConflictActionError] = useState(null);
+    const [modalConflictVersion, setModalConflictVersion] = useState(null);
 
     const isSqlTab = sqlTabId != null;
     const tabId = isSqlTab ? sqlTabId : workspaceId;
@@ -39,7 +44,20 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
     useEffect(() => {
         setDraft(qs.sql);
         setResults(qs.results);
-    }, [key]);
+    }, [key, qs.sql]);
+
+    useEffect(() => {
+        if (externalConflict) {
+            setConflictOpen(true);
+            setConflictActionError(null);
+            setModalConflictVersion(qs.conflictVersion);
+        }
+        else {
+            setConflictOpen(false);
+            setConflictBusy(false);
+            setModalConflictVersion(null);
+        }
+    }, [externalConflict, key, qs.conflictVersion]);
 
     if (!entry || !key)
         return null;
@@ -139,6 +157,44 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
             setStatus("Error");
     };
 
+    const reloadFromDisk = async () => {
+        if (conflictBusy)
+            return;
+        setConflictBusy(true);
+        setConflictActionError(null);
+        try {
+            const result = await session.coordinator.reloadSqlFile(tabId);
+            if (result?.error)
+                setConflictActionError(result.error);
+        }
+        catch (error) {
+            setConflictActionError(error?.message || String(error));
+        }
+        finally {
+            setConflictBusy(false);
+        }
+    };
+
+    const overwriteDisk = async () => {
+        if (conflictBusy)
+            return;
+        setConflictBusy(true);
+        setConflictActionError(null);
+        try {
+            const result = await session.coordinator.overwriteSqlFile(tabId, modalConflictVersion);
+            if (result?.error)
+                setConflictActionError(result.error);
+        }
+        catch (error) {
+            setConflictActionError(error?.message || String(error));
+            setModalConflictVersion(session.sqlState.get(key)?.conflictVersion || modalConflictVersion);
+            setConflictOpen(true);
+        }
+        finally {
+            setConflictBusy(false);
+        }
+    };
+
     useEffect(() => {
         queryHooksRef.current = { run: () => runRef.current() };
         return () => { queryHooksRef.current = null; };
@@ -185,7 +241,27 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                         <Icon name="warning" />
                         <span>{saveError?.message || String(saveError)}</span>
                         {saveFailed ? <button className="btn btn-compact" data-testid="sql-save-retry" onClick={() => { void retrySave(); }}><Icon name="refresh" />Retry</button> : null}
+                        {externalConflict ? <button className="btn btn-compact" data-testid="sql-conflict-resolve" onClick={() => { setConflictActionError(null); setModalConflictVersion(qs.conflictVersion); setConflictOpen(true); }}>Resolve conflict</button> : null}
                     </div>
+                ) : null}
+                {conflictOpen && externalConflict ? (
+                    <Modal
+                        icon="warning"
+                        title="External changes detected"
+                        size="sm"
+                        onClose={() => { if (!conflictBusy) setConflictOpen(false); }}
+                        footer={(
+                            <>
+                                <button className="btn" data-testid="sql-conflict-reload" onClick={() => { void reloadFromDisk(); }} disabled={conflictBusy}>Reload from Disk</button>
+                                <button className="btn btn-primary" data-testid="sql-conflict-overwrite" onClick={() => { void overwriteDisk(); }} disabled={conflictBusy}>Overwrite Disk</button>
+                            </>
+                        )}
+                    >
+                        <div className="flex flex-col gap-[var(--s3)] px-[var(--s7)] py-[var(--s6)]">
+                            <div>The SQL file changed outside Muxy. Choose which version to keep.</div>
+                            {conflictActionError ? <div className="error-box" data-testid="sql-conflict-error" role="alert">{conflictActionError}</div> : null}
+                        </div>
+                    </Modal>
                 ) : null}
                 <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
                     <SqlEditorView
