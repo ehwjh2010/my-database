@@ -521,6 +521,106 @@ test("cancelling a dirty scope change preserves every workspace and scope state"
     assert.equal(session.catalogToken, 0);
 });
 
+test("cancelling a database change with a dirty SQL tab preserves the whole session", async () => {
+    const session = stubSession({
+        conn: { engine: "postgres", net: { database: "app" } },
+        sqlNamespace: { databaseDir: "/tmp/sql", fingerprint: "app", databaseKey: "app" },
+        consoleState: { phase: "ready", files: [], error: null },
+    });
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({
+        confirm: async () => "Cancel",
+        sqlFiles: {
+            async createSqlFile(_, name) {
+                return { name, path: `/tmp/sql/${name}`, size: 0, mtimeMs: 0, reserved: false };
+            },
+        },
+    }));
+    const opened = await coordinator.newQuery();
+    const state = session.sqlState.get(session.sqlRegistry.byId[opened.sqlTabId].key);
+    coordinator.updateSqlDraft(opened.sqlTabId, "SELECT unsaved;");
+    const registry = session.sqlRegistry;
+    clearTimeout(session.sqlOwners.get(session.sqlRegistry.byId[opened.sqlTabId].key).saveTimer);
+
+    const result = await coordinator.changeScope({ database: "other" });
+
+    assert.deepEqual(result, { outcome: "cancelled" });
+    assert.equal(session.ctx.database, "app");
+    assert.equal(session.sqlRegistry, registry);
+    assert.equal(session.sqlState.get(session.sqlRegistry.byId[opened.sqlTabId].key), state);
+    assert.equal(state.dirty, true);
+});
+
+test("schema changes refresh objects without changing the Console surface or SQL ownership", async () => {
+    const session = stubSession({
+        conn: { engine: "postgres", net: { database: "app" } },
+        consoleState: { phase: "ready", files: [{ name: "saved.sql" }], error: null },
+        sqlFiles: [{ name: "saved.sql" }],
+    });
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters());
+    const sqlEntry = { id: 1, key: "sql:1", generation: 1, kind: "sql", name: "saved.sql" };
+    const sqlState = { sql: "SELECT 1;", results: { results: [] }, queryRunning: true };
+    session.sqlRegistry = { order: [1], activeId: 1, byId: { 1: sqlEntry } };
+    session.sqlState.set(sqlEntry.key, sqlState);
+    session.sqlOwners.set(sqlEntry.key, { queryRequest: 1 });
+    session.surface = "object";
+    const request = coordinator.initiateQueryExecute(1, "SELECT 1", "execute");
+    const registry = session.sqlRegistry;
+    const consoleState = session.consoleState;
+
+    await coordinator.changeScope({ schema: "reporting" });
+
+    assert.equal(session.surface, "object");
+    assert.equal(session.sqlRegistry, registry);
+    assert.equal(session.sqlState.get(sqlEntry.key), sqlState);
+    assert.equal(session.consoleState, consoleState);
+    assert.equal(session.consoleEpoch, 0);
+    assert.equal(request.operationCtx.schema, "main");
+    assert.equal(session.ctx.schema, "reporting");
+});
+
+test("confirmed database changes clear SQL runtime and load the new manifest once", async () => {
+    const files = [{ name: "console.sql", path: "/tmp/other/console.sql", reserved: true }];
+    const calls = [];
+    const session = stubSession({
+        conn: { engine: "postgres", net: { database: "app" } },
+        sqlNamespace: { databaseDir: "/tmp/app", fingerprint: "app", databaseKey: "app" },
+        consoleState: { phase: "ready", files: [], error: null },
+    });
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({
+        sqlFiles: {
+            async getNamespace({ database }) {
+                calls.push(["namespace", database]);
+                return { databaseDir: `/tmp/${database}`, fingerprint: database, databaseKey: database };
+            },
+            async ensureConsoleFile(namespace) {
+                calls.push(["ensure", namespace.databaseKey]);
+            },
+            async listSqlFiles(namespace) {
+                calls.push(["list", namespace.databaseKey]);
+                return files;
+            },
+            async createSqlFile(_, name) {
+                return { name, path: `/tmp/app/${name}`, size: 0, mtimeMs: 0, reserved: false };
+            },
+        },
+    }));
+    const opened = await coordinator.newQuery();
+    const request = coordinator.initiateQueryExecute(opened.sqlTabId, "SELECT 1", "execute");
+    session.sqlState.get(request.sqlKey).results = { results: [{ columns: [], rows: [] }] };
+
+    const result = await coordinator.changeScope({ database: "other" });
+
+    assert.equal(result.outcome, "committed");
+    assert.equal(session.ctx.database, "other");
+    assert.equal(session.consoleEpoch, 1);
+    assert.deepEqual(session.sqlRegistry, { order: [], activeId: null, byId: {} });
+    assert.equal(session.sqlState.size, 0);
+    assert.equal(session.sqlOwners.size, 0);
+    assert.equal(session.consoleState.phase, "ready");
+    assert.deepEqual(session.sqlFiles, files);
+    assert.deepEqual(calls, [["namespace", "other"], ["ensure", "other"], ["list", "other"]]);
+});
+
 test("latest scope intent wins when dirty confirmations resolve out of order", async () => {
     const session = stubSession();
     const resolvers = [];
@@ -936,6 +1036,45 @@ test("confirmWindowClose aggregates all dirty workspaces into one confirmation",
 
     coordinator.adapters.confirm = async () => "Discard & Close";
     assert.deepEqual(await coordinator.confirmWindowClose(), { allowClose: true, dirtyWorkspaceCount: 2 });
+});
+
+test("window close uses one gate for dirty object workspaces and SQL tabs", async () => {
+    const session = stubSession({
+        conn: { engine: "postgres", net: { database: "app" } },
+        sqlNamespace: { databaseDir: "/tmp/sql", fingerprint: "app", databaseKey: "app" },
+        consoleState: { phase: "ready", files: [], error: null },
+    });
+    let asked = 0;
+    let message = "";
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({
+        confirm: async (options) => {
+            asked += 1;
+            message = options.message;
+            return "Cancel";
+        },
+        sqlFiles: {
+            async createSqlFile(_, name) {
+                return { name, path: `/tmp/sql/${name}`, size: 0, mtimeMs: 0, reserved: false };
+            },
+        },
+    }));
+    const workspace = coordinator.openOrActivate({ database: "app", schema: "main", table: "orders" });
+    session.changes.get(session.registry.byId[workspace.workspaceId].key).inserts.push({ id: 1 });
+    const opened = await coordinator.newQuery();
+    coordinator.updateSqlDraft(opened.sqlTabId, "SELECT unsaved;");
+    clearTimeout(session.sqlOwners.get(session.sqlRegistry.byId[opened.sqlTabId].key).saveTimer);
+    const registry = session.registry;
+    const sqlRegistry = session.sqlRegistry;
+
+    const result = await coordinator.confirmWindowClose();
+
+    assert.equal(result.allowClose, false);
+    assert.equal(result.dirtyWorkspaceCount, 1);
+    assert.equal(result.dirtySqlTabCount, 1);
+    assert.equal(asked, 1);
+    assert.match(message, /SQL/);
+    assert.equal(session.registry, registry);
+    assert.equal(session.sqlRegistry, sqlRegistry);
 });
 
 test("confirmed window close clears every workspace-owned runtime before allowing close", async () => {

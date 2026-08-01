@@ -62,6 +62,8 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         session.sqlState.clear();
         session.sqlOwners.clear();
         session.sqlRegistry = { order: [], activeId: null, byId: {} };
+        session.sqlFiles = [];
+        session.sqlNamespace = null;
     };
     const clearWindowRuntime = ({ clearSql = true } = {}) => {
         clearDataRuntimes(session);
@@ -84,9 +86,10 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         session.tables = [];
         session.columnsMap = {};
         session.catalogError = null;
-        session.surface = "console";
-        if (clearSql)
+        if (clearSql) {
+            session.surface = "console";
             session.consoleState = { phase: "missing", files: [], error: null };
+        }
         clearWindowRuntime({ clearSql });
         adapters.notifyScope?.();
         adapters.notifyCatalog?.();
@@ -731,12 +734,15 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
                     totalChanges += count;
                 }
             }
-            if (dirtyWorkspaceCount > 0) {
+            const dirtySqlTabCount = session.sqlRegistry.order.filter((sqlTabId) => sqlNeedsUnsavedGuard(sqlEntryById(sqlTabId))).length;
+            if (dirtyWorkspaceCount > 0 || dirtySqlTabCount > 0) {
                 let choice;
                 try {
+                    const changeMessage = totalChanges ? `${totalChanges} unapplied change${totalChanges === 1 ? "" : "s"}` : "";
+                    const sqlMessage = dirtySqlTabCount > 0 ? `${dirtySqlTabCount} SQL tab${dirtySqlTabCount === 1 ? "" : "s"} with unsaved changes` : "";
                     choice = await adapters.confirm?.({
                         title: "Discard pending changes?",
-                        message: `${totalChanges} unapplied change${totalChanges === 1 ? "" : "s"} will be lost when changing scope.`,
+                        message: `${changeMessage}${changeMessage && sqlMessage ? " " : ""}${sqlMessage} will be lost when changing scope.`,
                         buttons: ["Change Scope", "Cancel"],
                         cancel: "Cancel",
                         style: "warning",
@@ -755,8 +761,15 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             session.ctx.schema = target.schema;
             session.scopeGeneration = (session.scopeGeneration || 0) + 1;
             clearScopeRuntime({ clearSql: databaseChanged });
+            const consoleApi = filesApi();
+            const reloadConsole = databaseChanged
+                && (session.consoleState.phase !== "missing" || session.sqlNamespace || adapters.sqlFiles)
+                && typeof consoleApi.getNamespace === "function"
+                && typeof consoleApi.listSqlFiles === "function";
+            const consoleLoad = reloadConsole ? coordinator.enterConsole() : null;
             const catalog = await coordinator.initiateCatalogLoad();
-            return { outcome: "committed", scopeEpoch: session.scopeGeneration, catalog };
+            const console = consoleLoad ? await consoleLoad : null;
+            return { outcome: "committed", scopeEpoch: session.scopeGeneration, catalog, ...(console ? { console, files: session.sqlFiles } : {}) };
         },
 
         async initiateCatalogLoad() {
@@ -890,15 +903,18 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
                     totalChanges += count;
                 }
             }
-            if (!dirtyWorkspaceCount) {
+            const dirtySqlTabCount = session.sqlRegistry.order.filter((sqlTabId) => sqlNeedsUnsavedGuard(sqlEntryById(sqlTabId))).length;
+            if (!dirtyWorkspaceCount && !dirtySqlTabCount) {
                 clearWindowRuntime();
                 return { allowClose: true, dirtyWorkspaceCount: 0 };
             }
             let choice;
             try {
+                const closeMessage = totalChanges ? `${totalChanges} unapplied change${totalChanges === 1 ? "" : "s"}` : "";
+                const sqlMessage = dirtySqlTabCount > 0 ? `${dirtySqlTabCount} SQL tab${dirtySqlTabCount === 1 ? "" : "s"} with unsaved changes` : "";
                 choice = await adapters.confirm?.({
                     title: "Discard pending changes?",
-                    message: `${totalChanges} unapplied change${totalChanges === 1 ? "" : "s"} will be lost.`,
+                    message: `${closeMessage}${closeMessage && sqlMessage ? " " : ""}${sqlMessage} will be lost.`,
                     buttons: ["Discard & Close", "Cancel"],
                     cancel: "Cancel",
                     style: "warning",
@@ -910,7 +926,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             const allowClose = choice === "Discard & Close";
             if (allowClose)
                 clearWindowRuntime();
-            return { allowClose, dirtyWorkspaceCount };
+            return dirtySqlTabCount > 0 ? { allowClose, dirtyWorkspaceCount, dirtySqlTabCount } : { allowClose, dirtyWorkspaceCount };
         },
     };
     session.coordinator = coordinator;
