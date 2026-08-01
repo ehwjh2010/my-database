@@ -70,6 +70,10 @@ export function selectedSql(view) {
     return null;
 }
 
+export function querySql(view) {
+    return selectedSql(view)?.trim() || view.state.doc.toString().trim();
+}
+
 export function insertSql(view, text) {
     view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: text },

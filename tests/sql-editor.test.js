@@ -1,7 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { syncSqlEditorDocument } from "../src/editor/sql-editor.js";
+import { querySql, syncSqlEditorDocument } from "../src/editor/sql-editor.js";
+
+test("querySql uses the non-empty selection or the whole document", () => {
+    const view = {
+        state: {
+            selection: { main: { from: 7, to: 15 } },
+            sliceDoc: (from, to) => from === 7 && to === 15 ? "SELECT 1" : "",
+            doc: { toString: () => "SELECT 1;\nSELECT 2;" },
+        },
+    };
+
+    assert.equal(querySql(view), "SELECT 1");
+    view.state.selection.main = { from: 0, to: 0 };
+    assert.equal(querySql(view), "SELECT 1;\nSELECT 2;");
+});
 
 test("syncSqlEditorDocument replaces a stale editor document once", () => {
     let dispatches = 0;

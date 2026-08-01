@@ -3,8 +3,7 @@ import { Icon } from "../ui/icon.jsx";
 import { Modal } from "../ui/modal.jsx";
 import { toast } from "../ui/toast.js";
 import { appendHistory } from "../lib/storage.js";
-import { statementAt } from "../lib/sql/statement-split.js";
-import { selectedSql, insertSql } from "./sql-editor.js";
+import { querySql, insertSql } from "./sql-editor.js";
 import { exportResult } from "../transfer/transfer.js";
 import { SqlEditorView } from "./sql-editor-view.jsx";
 import { Results } from "./results.jsx";
@@ -22,7 +21,6 @@ export function schemaForCompletion(session) {
 export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHooksRef }) {
     const editorRef = useRef(null);
     const [panel, setPanel] = useState(null);
-    const [running, setRunning] = useState(false);
     const [historyToken, setHistoryToken] = useState(0);
     const [conflictOpen, setConflictOpen] = useState(false);
     const [conflictBusy, setConflictBusy] = useState(false);
@@ -39,11 +37,9 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
     const externalConflict = isSqlTab && qs.externalConflict;
     const saveError = qs.saveError;
     const [draft, setDraft] = useState(() => qs.sql);
-    const [results, setResults] = useState(() => qs.results);
 
     useEffect(() => {
         setDraft(qs.sql);
-        setResults(qs.results);
     }, [key, qs.sql]);
 
     useEffect(() => {
@@ -62,17 +58,12 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
     if (!entry || !key)
         return null;
 
-    const active = isSqlTab
+    const isActive = () => isSqlTab
         ? session.surface === "console" && session.sqlRegistry.activeId === sqlTabId
         : session.surface === "object" && session.registry.activeId === workspaceId;
 
     const currentStatement = () => {
-        if (!editorRef.current) return "";
-        const selection = selectedSql(editorRef.current);
-        if (selection)
-            return selection.trim();
-        const offset = editorRef.current.state.selection.main.head;
-        return statementAt(editorRef.current.state.doc.toString(), offset, session.conn.engine)?.sql || "";
+        return editorRef.current ? querySql(editorRef.current) : "";
     };
 
     const setDraftText = useCallback((sql) => {
@@ -93,7 +84,6 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                 setStatus("Error");
                 return;
             }
-            setRunning(true);
             setStatus(isExplain ? "Explaining\u2026" : "Running\u2026");
             const started = Date.now();
             try {
@@ -103,10 +93,9 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                     ? await session.driver.explain(snapshot.operationCtx, snapshot.sql, { timeoutMs: session.timeoutMs })
                     : await session.driver.runQuery(snapshot.operationCtx, snapshot.sql, { timeoutMs: session.timeoutMs });
             } catch (error) {
-                if (!commitQueryError(session, snapshot, error.message))
+                if (!commitQueryError(session, snapshot, isExplain ? "QUERY_EXPLAIN_FAILED" : error.message))
                     return;
-                if (active) {
-                    setResults(stateMap.get(key).results);
+                if (isActive()) {
                     setStatus("Error");
                 }
                 if (!isSqlTab && !isExplain && isCurrentQueryRequest(session, snapshot))
@@ -117,20 +106,18 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                 return;
             const rows = data.reduce((sum, r) => sum + r.rows.length, 0);
             const duration = data.reduce((sum, r) => sum + (r.durationMs || 0), 0);
-            if (active) {
-                setResults(stateMap.get(key).results);
+            if (isActive()) {
                 setStatus(`Done \u00b7 ${rows} rows \u00b7 ${duration}ms`);
             }
             if (!isSqlTab && !isExplain && isCurrentQueryRequest(session, snapshot))
                 await appendHistory(session.conn.id, { id: String(started), sql: snapshot.sql.slice(0, 4096), startedAt: started, durationMs: duration, ok: true, rows });
             } finally {
-                if (isCurrentQueryRequest(session, snapshot) && active) {
-                    setRunning(false);
+                if (isCurrentQueryRequest(session, snapshot) && isActive()) {
                     setHistoryToken((n) => n + 1);
                 }
             }
         },
-        [active, key, session, setStatus, stateMap, tabId],
+        [key, session, setStatus, stateMap, tabId],
     );
 
     const run = useCallback(async () => {
@@ -215,14 +202,13 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
         <div className="flex min-h-0 flex-1">
             <div className="flex min-w-0 flex-1 flex-col">
                 <div className="toolbar border-b" style={{ borderColor: "var(--muxy-border)" }}>
-                    <button className="btn btn-compact btn-primary" disabled={running} onClick={() => run("cursor")}>
+                    <button className="btn btn-compact btn-primary" disabled={qs.queryRunning} onClick={run}>
                         <Icon name="play" />
                         Run
                     </button>
-                    <button className="btn btn-compact" title="Explain the statement at the cursor" onClick={runExplain}>
+                    <button className="btn btn-compact" title="Explain the selected SQL or full file" disabled={qs.queryRunning} onClick={runExplain}>
                         Explain
                     </button>
-                    <span className="text-[var(--font-footnote)] text-muted-foreground">{"\u2318\u23ce statement"}</span>
                     <div className="flex-1" />
                     <button className="icon-btn" title="Export results as CSV" onClick={exportResults}>
                         <Icon name="download" />
@@ -274,7 +260,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                     />
                 </div>
                 <div className="min-h-0 border-t" style={{ borderColor: "var(--muxy-border)", flex: "0 0 45%" }}>
-                    <Results results={results?.results} error={results?.error} />
+                    <Results results={qs.results?.results} error={qs.queryError} />
                 </div>
             </div>
             {panel === "history" ? (
@@ -285,7 +271,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                     <SavedPanel
                         session={session}
                         onPick={(sql) => insertSql(editorRef.current, sql)}
-                        getCurrentSql={() => selectedSql(editorRef.current) ?? (editorRef.current ? editorRef.current.state.doc.toString() : "")}
+                        getCurrentSql={() => querySql(editorRef.current)}
                     />
                 </div>
             ) : null}
