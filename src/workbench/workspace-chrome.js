@@ -36,6 +36,16 @@ export function workspaceSwitchMenuItems({ order = [], byId = {}, onActivate } =
         }));
 }
 
+export function sqlFileMenuItems({ files = [], order = [], byId = {}, onCreate, onOpen } = {}) {
+    const openNames = new Set(order.map((id) => byId[id]?.name).filter(Boolean));
+    return [
+        { label: "New SQL File...", onClick: onCreate },
+        ...files
+            .filter((file) => !file.reserved && !openNames.has(file.name))
+            .map((file) => ({ label: file.name, onClick: () => onOpen?.(file) })),
+    ];
+}
+
 export function closeWorkspaceTabIntent(event, workspaceId, onClose) {
     event?.stopPropagation?.();
     onClose(workspaceId);

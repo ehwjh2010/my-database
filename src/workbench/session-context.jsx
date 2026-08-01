@@ -7,7 +7,7 @@ export function useSession() {
     return useContext(SessionContext);
 }
 
-export function SessionProvider({ session, queryHooksRef, setViewRef, children }) {
+export function SessionProvider({ session, queryHooksRef, setViewRef, newFileRef, children }) {
     const coordinator = session.coordinator;
     const [registryRevision, bumpRegistryRevision] = useReducer((n) => n + 1, 0);
     const [tables, setTables] = useState(session.tables || []);
@@ -53,6 +53,8 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, children }
     const openWorkspace = useCallback((next) => coordinator.openOrActivate(next), [coordinator]);
     const enterConsole = useCallback(() => coordinator.enterConsole(), [coordinator]);
     const newQuery = useCallback(() => coordinator.newQuery(), [coordinator]);
+    const createAndOpenFile = useCallback((name) => coordinator.createAndOpenFile(name), [coordinator]);
+    const openSqlFile = useCallback((name) => coordinator.openSqlFile(name), [coordinator]);
     const activateSql = useCallback((sqlTabId) => coordinator.activateSql(sqlTabId), [coordinator]);
     const closeSql = useCallback((sqlTabId) => coordinator.closeSql(sqlTabId), [coordinator]);
     const loadTableInfo = useCallback((ref) => coordinator.loadTableInfo(ref), [coordinator]);
@@ -104,6 +106,8 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, children }
             openWorkspace,
             enterConsole,
             newQuery,
+            createAndOpenFile,
+            openSqlFile,
             activateSql,
             closeSql,
             loadTableInfo,
@@ -128,8 +132,9 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, children }
             changeScope,
             schemaEpoch,
             queryHooksRef,
+            newFileRef,
         }),
-        [session, coordinator, order, activeId, byId, activeKey, activeMode, activeRef, activeSqlId, surface, registryRevision, pendingRevision, dataRevision, notifyPendingChanges, changeView, selectTable, openWorkspace, enterConsole, newQuery, activateSql, closeSql, loadTableInfo, focusTableColumn, columnFocus, consumeColumnFocus, activateWorkspace, closeWorkspace, refreshData, setWorkspaceMode, tables, columnsMap, catalogError, status, refreshSchema, changeScope, schemaEpoch, queryHooksRef],
+        [session, coordinator, order, activeId, byId, activeKey, activeMode, activeRef, activeSqlId, surface, registryRevision, pendingRevision, dataRevision, notifyPendingChanges, changeView, selectTable, openWorkspace, enterConsole, newQuery, createAndOpenFile, openSqlFile, activateSql, closeSql, loadTableInfo, focusTableColumn, columnFocus, consumeColumnFocus, activateWorkspace, closeWorkspace, refreshData, setWorkspaceMode, tables, columnsMap, catalogError, status, refreshSchema, changeScope, schemaEpoch, queryHooksRef, newFileRef],
     );
 
     return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

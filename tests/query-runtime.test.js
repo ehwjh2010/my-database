@@ -93,17 +93,26 @@ test("query state stays isolated across workspaces and scope epochs", () => {
     assert.equal(commitQueryResult(session, ordersRequest, [{ columns: [{ name: "id" }], rows: [[1]] }]), false);
 });
 
-test("SQL tab query results stay isolated and expose export context", () => {
-    const session = stubSession({ conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } } });
-    const coordinator = createWorkspaceCoordinator(session);
-    const { sqlTabId } = coordinator.newQuery();
+test("SQL tab query results stay isolated and expose export context", async () => {
+    const session = stubSession({
+        conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } },
+        sqlNamespace: { databaseDir: "/tmp/sql", fingerprint: "fingerprint", databaseKey: "fingerprint" },
+        sqlFiles: [],
+    });
+    const coordinator = createWorkspaceCoordinator(session, {
+        sqlFiles: {
+            async createSqlFile(_, name) {
+                return { name, path: `/tmp/sql/${name}`, size: 0, mtimeMs: 0, reserved: false };
+            },
+        },
+    });
+    const { sqlTabId } = await coordinator.newQuery();
     const request = coordinator.initiateQueryExecute(sqlTabId, "SELECT 1", "execute");
     const result = { columns: [{ name: "id" }], rows: [[1]] };
 
     assert.equal(commitQueryResult(session, request, [result]), true);
-    assert.deepEqual(session.sqlState.get(request.sqlKey), {
-        sql: "",
-        results: { results: [result] },
-        exportContext: { objectRef: undefined, result },
-    });
+    const state = session.sqlState.get(request.sqlKey);
+    assert.equal(state.sql, "");
+    assert.deepEqual(state.results, { results: [result] });
+    assert.deepEqual(state.exportContext, { objectRef: undefined, result });
 });

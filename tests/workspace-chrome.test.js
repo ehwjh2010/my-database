@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { closeWorkspaceTabIntent, projectWorkspaceTabs, workspaceSwitchMenuItems, workspaceTabTitle } from "../src/workbench/workspace-chrome.js";
+import { closeWorkspaceTabIntent, projectWorkspaceTabs, sqlFileMenuItems, workspaceSwitchMenuItems, workspaceTabTitle } from "../src/workbench/workspace-chrome.js";
 
 function makeRegistry() {
     return {
@@ -72,6 +72,26 @@ test("workspaceSwitchMenuItems lists every workspace in tab order with activate-
 
 test("workspaceSwitchMenuItems is empty when no workspace is open", () => {
     assert.deepEqual(workspaceSwitchMenuItems({ order: [], byId: {}, onActivate: () => {} }), []);
+});
+
+test("sqlFileMenuItems includes create and only unopened regular files", () => {
+    const opened = [];
+    const items = sqlFileMenuItems({
+        order: [4],
+        byId: { 4: { name: "open.sql" } },
+        files: [
+            { name: "console.sql", reserved: true },
+            { name: "open.sql", reserved: false },
+            { name: "saved.sql", reserved: false },
+        ],
+        onCreate: () => opened.push("create"),
+        onOpen: (file) => opened.push(file.name),
+    });
+
+    assert.deepEqual(items.map((item) => item.label), ["New SQL File...", "saved.sql"]);
+    items[0].onClick();
+    items[1].onClick();
+    assert.deepEqual(opened, ["create", "saved.sql"]);
 });
 
 test("projectWorkspaceTabs renders SQL tabs with code icons and no dirty state", () => {

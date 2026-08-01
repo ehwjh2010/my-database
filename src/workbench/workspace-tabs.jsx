@@ -3,8 +3,9 @@ import { Icon } from "../ui/icon.jsx";
 import { ContextMenu } from "../ui/context-menu.jsx";
 import { closeWorkspaceTabIntent, projectWorkspaceTabs, workspaceSwitchMenuItems } from "./workspace-chrome.js";
 
-export function WorkspaceTabs({ order = [], activeId, byId = {}, changesByKey, onActivate, onClose }) {
+export function WorkspaceTabs({ order = [], activeId, byId = {}, changesByKey, onActivate, onClose, newMenuItems = [] }) {
     const [menu, setMenu] = useState(null);
+    const [newMenu, setNewMenu] = useState(null);
     const tabs = projectWorkspaceTabs({ order, byId, activeId, changesByKey });
     const items = workspaceSwitchMenuItems({ order, byId, onActivate });
 
@@ -48,6 +49,17 @@ export function WorkspaceTabs({ order = [], activeId, byId = {}, changesByKey, o
             </div>
             <button
                 type="button"
+                className="workspace-tabs-all workspace-tabs-new"
+                data-testid="workspace-tabs-new"
+                aria-label="New SQL file"
+                title="New SQL file"
+                disabled={!newMenuItems?.length}
+                onClick={(event) => setNewMenu({ x: event.clientX, y: event.clientY })}
+            >
+                <Icon name="plus" />
+            </button>
+            <button
+                type="button"
                 className="workspace-tabs-all"
                 data-testid="workspace-tabs-all"
                 aria-label="切换工作区"
@@ -58,6 +70,7 @@ export function WorkspaceTabs({ order = [], activeId, byId = {}, changesByKey, o
                 <Icon name="chevronRight" />
             </button>
             {menu ? <ContextMenu x={menu.x} y={menu.y} items={items} onClose={() => setMenu(null)} /> : null}
+            {newMenu ? <ContextMenu x={newMenu.x} y={newMenu.y} items={newMenuItems} onClose={() => setNewMenu(null)} /> : null}
         </div>
     );
 }

@@ -1,5 +1,5 @@
 import { clearChanges } from "../grid/pending-changes.js";
-import { ensureConsoleFile, getSqlNamespace, listSqlFiles } from "../lib/sql-files.js";
+import { createSqlFile, ensureConsoleFile, getSqlNamespace, listSqlFiles, readSqlFile, validateFileName } from "../lib/sql-files.js";
 import { clearDataRuntime, clearDataRuntimes, dataRuntimeFor, nextDataRequest, refreshDataRuntime } from "./data-runtime.js";
 import { currentDatabase, hasDatabase } from "./state.js";
 import { initialWorkspaceState, objectCacheKey, pendingChangeCountFor, sameObjectRef, workspaceReducer } from "./workspace-state.js";
@@ -26,6 +26,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
     session.sqlState = session.sqlState || new Map();
     session.sqlOwners = session.sqlOwners || new Map();
     session.sqlTabIdCounter = session.sqlTabIdCounter || 0;
+    session.sqlFiles = session.sqlFiles || [];
     session.consoleToken = session.consoleToken || 0;
     session.consoleState = session.consoleState || { phase: "missing", files: [], error: null };
     session.surface = session.surface || "console";
@@ -94,6 +95,35 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         const entry = sqlEntryById(sqlTabId);
         return entry ? session.sqlState.get(entry.key) : null;
     };
+    const filesApi = () => adapters.sqlFiles || { getNamespace: getSqlNamespace, ensureConsoleFile, listSqlFiles, createSqlFile, readSqlFile };
+    const sortFiles = (files) => [...files].sort((left, right) => {
+        if (left.reserved !== right.reserved)
+            return left.reserved ? -1 : 1;
+        return left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
+    });
+    const setSqlFiles = (files) => {
+        session.sqlFiles = sortFiles(files);
+        session.consoleState = { ...session.consoleState, files: session.sqlFiles };
+    };
+    const emptyVersion = (file) => ({
+        sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        size: 0,
+        mtimeMs: file.mtimeMs,
+    });
+    const createSqlTab = (file, content, observedVersion) => {
+        const id = ++session.sqlTabIdCounter;
+        const key = `sql:${id}`;
+        session.sqlState.set(key, { sql: content, results: null, exportContext: null, observedVersion });
+        session.sqlOwners.set(key, { queryRequest: 0 });
+        session.sqlRegistry = {
+            order: [...session.sqlRegistry.order, id],
+            activeId: id,
+            byId: { ...session.sqlRegistry.byId, [id]: { id, key, kind: "sql", name: file.name, title: file.name, path: file.path, reserved: Boolean(file.reserved), observedVersion } },
+        };
+        session.surface = "console";
+        emit();
+        return { sqlTabId: id, created: true, activeId: id };
+    };
 
     const coordinator = {
         adapters,
@@ -120,16 +150,16 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             }
             session.consoleState = { phase: "loading", files: session.consoleState.files || [], error: null };
             emit();
-            const filesApi = adapters.sqlFiles || { getNamespace: getSqlNamespace, ensureConsoleFile, listSqlFiles };
+            const api = filesApi();
             return (async () => {
                 try {
-                    const namespace = await filesApi.getNamespace({ conn: session.conn, database: currentDatabase(session) });
-                    await filesApi.ensureConsoleFile(namespace);
-                    const files = await filesApi.listSqlFiles(namespace);
+                    const namespace = await api.getNamespace({ conn: session.conn, database: currentDatabase(session) });
+                    await api.ensureConsoleFile(namespace);
+                    const files = await api.listSqlFiles(namespace);
                     if (session.consoleToken !== token)
                         return { stale: true };
                     session.sqlNamespace = namespace;
-                    session.sqlFiles = files;
+                    setSqlFiles(files);
                     session.consoleState = { phase: "ready", files, error: null };
                     emit();
                     return { namespace, files };
@@ -151,18 +181,38 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         newQuery() {
             if (!hasDatabase(session))
                 return { error: "DATABASE_REQUIRED" };
-            const id = ++session.sqlTabIdCounter;
-            const key = `sql:${id}`;
-            session.sqlState.set(key, { sql: "", results: null, exportContext: null });
-            session.sqlOwners.set(key, { queryRequest: 0 });
-            session.sqlRegistry = {
-                order: [...session.sqlRegistry.order, id],
-                activeId: id,
-                byId: { ...session.sqlRegistry.byId, [id]: { id, key, name: "New Query", title: "New Query", kind: "sql" } },
-            };
-            session.surface = "console";
-            emit();
-            return { sqlTabId: id, created: true, activeId: id };
+            return coordinator.createAndOpenFile("New Query");
+        },
+
+        async createAndOpenFile(rawName) {
+            if (!hasDatabase(session))
+                return { error: "DATABASE_REQUIRED" };
+            const name = validateFileName(rawName);
+            const api = filesApi();
+            const namespace = session.sqlNamespace || await api.getNamespace({ conn: session.conn, database: currentDatabase(session) });
+            const file = await api.createSqlFile(namespace, name);
+            setSqlFiles([...session.sqlFiles.filter((item) => item.name !== file.name), file]);
+            return createSqlTab(file, "", emptyVersion(file));
+        },
+
+        async openSqlFile(rawName) {
+            if (!hasDatabase(session))
+                return { error: "DATABASE_REQUIRED" };
+            const name = validateFileName(rawName, { allowReserved: true });
+            const existingId = session.sqlRegistry.order.find((id) => session.sqlRegistry.byId[id]?.name === name);
+            if (existingId !== undefined) {
+                session.surface = "console";
+                session.sqlRegistry = { ...session.sqlRegistry, activeId: existingId };
+                emit();
+                return { sqlTabId: existingId, activated: true, created: false, activeId: existingId };
+            }
+            const file = session.sqlFiles.find((item) => item.name === name);
+            if (!file)
+                return { error: "FILE_NOT_FOUND" };
+            const api = filesApi();
+            const namespace = session.sqlNamespace || await api.getNamespace({ conn: session.conn, database: currentDatabase(session) });
+            const read = await api.readSqlFile(namespace, name);
+            return createSqlTab(file, read.content, read.version);
         },
 
         activateSql(sqlTabId) {

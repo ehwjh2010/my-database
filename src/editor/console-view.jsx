@@ -1,5 +1,53 @@
+import { useState } from "react";
 import { EmptyState } from "../ui/empty-state.jsx";
 import { Icon } from "../ui/icon.jsx";
+import { Modal } from "../ui/modal.jsx";
+
+export function NewSqlFileModal({ error, onClose, onSubmit }) {
+    const [name, setName] = useState("");
+    const [busy, setBusy] = useState(false);
+
+    const submit = async () => {
+        if (busy)
+            return;
+        setBusy(true);
+        await onSubmit(name);
+        setBusy(false);
+    };
+
+    return (
+        <Modal
+            icon="file"
+            title="New SQL File"
+            size="sm"
+            onClose={onClose}
+            footer={(
+                <>
+                    <button className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+                    <button className="btn btn-primary" onClick={submit} disabled={busy}>Create</button>
+                </>
+            )}
+        >
+            <div className="flex flex-col gap-[var(--s3)] px-[var(--s7)] py-[var(--s6)]">
+                <label htmlFor="new-sql-file-name">File name</label>
+                <input
+                    id="new-sql-file-name"
+                    data-testid="new-sql-file-name"
+                    autoFocus
+                    value={name}
+                    onChange={(event) => setName(event.target.value)}
+                    onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                            event.preventDefault();
+                            submit();
+                        }
+                    }}
+                />
+                {error ? <div className="error-box" role="alert">{error}</div> : null}
+            </div>
+        </Modal>
+    );
+}
 
 export function ConsoleView({ state, hasDatabase, hasQueryTab, onNewQuery, onRetry }) {
     const phase = state?.phase || "missing";

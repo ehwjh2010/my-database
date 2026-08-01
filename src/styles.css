@@ -1085,6 +1085,14 @@ textarea:focus {
   color: var(--muxy-foreground);
 }
 
+.workspace-tabs-new {
+  order: 2;
+}
+
+.workspace-tabs-all:not(.workspace-tabs-new) {
+  order: 3;
+}
+
 .workspace-tabs-all:disabled {
   cursor: default;
   opacity: 0.45;

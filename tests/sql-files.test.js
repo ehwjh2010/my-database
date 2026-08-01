@@ -16,7 +16,7 @@ globalThis.muxy = {
     },
 };
 
-const { ensureConsoleFile, getSqlNamespace, listSqlFiles, validateFileName, filePath } = await import("../src/lib/sql-files.js");
+const { createSqlFile, ensureConsoleFile, getSqlNamespace, listSqlFiles, readSqlFile, validateFileName, filePath } = await import("../src/lib/sql-files.js");
 
 test("network SQL namespace uses the connection identity and database key", async () => {
     calls.length = 0;
@@ -110,6 +110,53 @@ test("listSqlFiles returns one sorted metadata batch and converges file modes", 
             reserved: true,
         });
         assert.equal((await stat(join(databaseDir, "z.sql"))).mode & 0o777, 0o600);
+    }
+    finally {
+        execHandler = async () => ({ exitCode: 0, stdout: "/Users/test-user\n", stderr: "" });
+        await rm(base, { recursive: true, force: true });
+    }
+});
+
+test("createSqlFile is create-only and readSqlFile returns content with its observed version", async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "muxy-sql-files-")));
+    const rootDir = join(base, "root");
+    const fingerprint = "fingerprint";
+    const databaseKey = "db-key";
+    const databaseDir = join(rootDir, fingerprint, databaseKey);
+    const namespace = { rootDir, fingerprint, databaseKey, databaseDir };
+    execHandler = (argv) => new Promise((resolve, reject) => {
+        const child = spawn(argv[0], argv.slice(1));
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (chunk) => stdout += chunk);
+        child.stderr.on("data", (chunk) => stderr += chunk);
+        child.on("error", reject);
+        child.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+    });
+
+    try {
+        await ensureConsoleFile(namespace);
+        calls.length = 0;
+        const created = await createSqlFile(namespace, "draft");
+
+        assert.equal(created.name, "draft.sql");
+        assert.equal(created.size, 0);
+        assert.equal(created.reserved, false);
+        assert.equal((await stat(created.path)).mode & 0o777, 0o600);
+        assert.equal(calls.length, 1);
+
+        const read = await readSqlFile(namespace, "draft.sql");
+        assert.equal(read.content, "");
+        assert.deepEqual(read.version, {
+            sha256: createHash("sha256").update("").digest("hex"),
+            size: 0,
+            mtimeMs: read.version.mtimeMs,
+        });
+        assert.equal(calls.length, 2);
+        await assert.rejects(createSqlFile(namespace, "draft.sql"), { code: "FILE_EXISTS" });
+        await assert.rejects(createSqlFile(namespace, "DRAFT.sql"), { code: "FILE_EXISTS" });
+        await writeFile(join(databaseDir, "e\u0301.sql"), "");
+        await assert.rejects(createSqlFile(namespace, "é"), { code: "FILE_EXISTS" });
     }
     finally {
         execHandler = async () => ({ exitCode: 0, stdout: "/Users/test-user\n", stderr: "" });

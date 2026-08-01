@@ -86,6 +86,80 @@ close($fh) or fail("FILE_WRITE_FAILED", $path . ": " . $!);
 @st = lstat($path) or fail("FILE_WRITE_FAILED", $path . ": " . $!);
 check_file($path, \@st);
 `;
+const CREATE_SCRIPT = String.raw`
+use Cwd qw(realpath);
+use Encode qw(decode);
+use Errno qw(EEXIST);
+use Fcntl qw(:mode O_WRONLY O_CREAT O_EXCL);
+use JSON::PP qw(encode_json);
+use Unicode::Normalize qw(NFC);
+umask 077;
+sub fail { die $_[0] . ": " . $_[1] . "\n"; }
+sub ensure_dir {
+    my ($path) = @_;
+    my @st = lstat($path);
+    if (!@st) {
+        mkdir($path, 0700) or fail("FILE_PERMISSION_FAILED", $path . ": " . $!);
+        @st = lstat($path) or fail("FILE_PERMISSION_FAILED", $path . ": " . $!);
+    }
+    fail("FILE_UNSAFE_TYPE", $path . " is a symlink") if S_ISLNK($st[2]);
+    fail("FILE_UNSAFE_TYPE", $path . " is not a directory") unless S_ISDIR($st[2]);
+    fail("FILE_PERMISSION_FAILED", $path . " owner mismatch") if $st[4] != $<;
+    chmod(0700, $path) or fail("FILE_PERMISSION_FAILED", $path . ": " . $!);
+}
+sub folded { return lc(NFC($_[0])); }
+sub meta {
+    my ($name, $path) = @_;
+    my @st = lstat($path) or fail("FILE_WRITE_FAILED", $path . ": " . $!);
+    fail("FILE_UNSAFE_TYPE", $path . " is a symlink") if S_ISLNK($st[2]);
+    fail("FILE_UNSAFE_TYPE", $path . " is not a regular file") unless S_ISREG($st[2]);
+    fail("FILE_PERMISSION_FAILED", $path . " owner mismatch") if $st[4] != $<;
+    chmod(0600, $path) or fail("FILE_PERMISSION_FAILED", $path . ": " . $!);
+    return { name => $name, path => $path, size => 0 + $st[7], mtimeMs => 0 + ($st[9] * 1000), reserved => JSON::PP::false() };
+}
+ensure_dir($ARGV[0]);
+ensure_dir($ARGV[1]);
+ensure_dir($ARGV[2]);
+my $real = realpath($ARGV[2]);
+fail("FILE_UNSAFE_TYPE", $ARGV[2] . " is outside its real path") unless defined($real) && $real eq $ARGV[2];
+my $dir = $ARGV[2];
+my $name = decode("UTF-8", $ARGV[4]);
+opendir(my $dh, $dir) or fail("FILE_WRITE_FAILED", $dir . ": " . $!);
+while (defined(my $existing = readdir($dh))) {
+    $existing = decode("UTF-8", $existing);
+    fail("FILE_EXISTS", $name) if folded($existing) eq folded($name);
+}
+closedir($dh) or fail("FILE_WRITE_FAILED", $dir . ": " . $!);
+my $path = $ARGV[3];
+my $fh;
+if (!sysopen($fh, $path, O_WRONLY | O_CREAT | O_EXCL, 0600)) {
+    fail("FILE_EXISTS", $path) if $! == EEXIST;
+    fail("FILE_WRITE_FAILED", $path . ": " . $!);
+}
+print $fh "" or fail("FILE_WRITE_FAILED", $path . ": " . $!);
+close($fh) or fail("FILE_WRITE_FAILED", $path . ": " . $!);
+print encode_json(meta($name, $path));
+`;
+const READ_SCRIPT = String.raw`
+use Encode qw(decode FB_CROAK);
+use Fcntl qw(:mode);
+use Digest::SHA qw(sha256_hex);
+use JSON::PP qw(encode_json);
+sub fail { die $_[0] . ": " . $_[1] . "\n"; }
+my $path = $ARGV[0];
+my @st = lstat($path) or fail("FILE_NOT_FOUND", $path . ": " . $!);
+fail("FILE_UNSAFE_TYPE", $path . " is a symlink") if S_ISLNK($st[2]);
+fail("FILE_UNSAFE_TYPE", $path . " is not a regular file") unless S_ISREG($st[2]);
+fail("FILE_PERMISSION_FAILED", $path . " owner mismatch") if $st[4] != $<;
+chmod(0600, $path) or fail("FILE_PERMISSION_FAILED", $path . ": " . $!);
+open(my $fh, "<:raw", $path) or fail("FILE_READ_FAILED", $path . ": " . $!);
+local $/;
+my $bytes = <$fh>;
+close($fh) or fail("FILE_READ_FAILED", $path . ": " . $!);
+my $content;
+eval { $content = decode("UTF-8", $bytes // "", FB_CROAK); 1 } or fail("FILE_READ_FAILED", $path . ": invalid UTF-8");
+print encode_json({ content => $content, version => { sha256 => sha256_hex($bytes // ""), size => 0 + length($bytes // ""), mtimeMs => 0 + ($st[9] * 1000) } });
+`;
 const LIST_SCRIPT = String.raw`
 use Cwd qw(realpath);
 use Encode qw(decode);
@@ -184,6 +258,15 @@ async function execute(argv, fallbackCode) {
     }
 }
 
+function parseJson(output, fallbackCode) {
+    try {
+        return JSON.parse(output);
+    }
+    catch (error) {
+        throw new SqlFileError(fallbackCode, error.message);
+    }
+}
+
 async function sha256(value) {
     const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
     return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -254,6 +337,22 @@ export async function ensureConsoleFile(namespace) {
     const path = filePath(namespace, "console.sql");
     await execute(["perl", "-e", ENSURE_CONSOLE_SCRIPT, rootDir, fingerprintDir, databaseDir, path], "FILE_PERMISSION_FAILED");
     return path;
+}
+
+export async function createSqlFile(namespace, input) {
+    const { rootDir, fingerprintDir, databaseDir } = namespacePaths(namespace);
+    const name = validateFileName(input);
+    const path = filePath(namespace, name);
+    const output = await execute(["perl", "-MJSON::PP=encode_json", "-e", CREATE_SCRIPT, rootDir, fingerprintDir, databaseDir, path, name], "FILE_WRITE_FAILED");
+    return parseJson(output, "FILE_WRITE_FAILED");
+}
+
+export async function readSqlFile(namespace, input) {
+    const { rootDir, fingerprintDir, databaseDir } = namespacePaths(namespace);
+    const name = validateFileName(input, { allowReserved: true });
+    const path = filePath(namespace, name);
+    const output = await execute(["perl", "-MDigest::SHA=sha256_hex", "-MJSON::PP=encode_json", "-e", READ_SCRIPT, path], "FILE_READ_FAILED");
+    return parseJson(output, "FILE_READ_FAILED");
 }
 
 export async function listSqlFiles(namespace) {

@@ -1227,16 +1227,54 @@ test("enterConsole keeps the original file error and retry reruns the same load"
     assert.equal(attempts, 2);
 });
 
-test("query execution requires an active SQL tab and new queries start empty", () => {
+test("file-backed SQL tabs create, open once, activate, isolate state, and close cleanly", async () => {
+    const reads = [];
+    const session = stubSession({
+        conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } },
+        sqlNamespace: { databaseDir: "/tmp/sql", fingerprint: "fingerprint", databaseKey: "fingerprint" },
+        sqlFiles: [{ name: "saved.sql", path: "/tmp/sql/saved.sql", size: 8, mtimeMs: 2, reserved: false }],
+        consoleState: { phase: "ready", files: [], error: null },
+    });
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({
+        sqlFiles: {
+            async createSqlFile(namespace, name) {
+                assert.equal(namespace, session.sqlNamespace);
+                assert.equal(name, "draft.sql");
+                return { name, path: `/tmp/sql/${name}`, size: 0, mtimeMs: 3, reserved: false };
+            },
+            async readSqlFile(namespace, name) {
+                reads.push([namespace, name]);
+                return { content: "SELECT 1;", version: { sha256: "hash", size: 9, mtimeMs: 4 } };
+            },
+        },
+    }));
+
+    const created = await coordinator.createAndOpenFile("draft");
+    assert.equal(created.created, true);
+    assert.equal(session.sqlRegistry.byId[created.sqlTabId].name, "draft.sql");
+    assert.equal(session.sqlState.get(session.sqlRegistry.byId[created.sqlTabId].key).sql, "");
+
+    const opened = await coordinator.openSqlFile("saved.sql");
+    const activated = await coordinator.openSqlFile("saved.sql");
+    assert.equal(opened.created, true);
+    assert.equal(activated.activated, true);
+    assert.equal(reads.length, 1);
+    assert.equal(session.sqlState.get(session.sqlRegistry.byId[opened.sqlTabId].key).sql, "SELECT 1;");
+    assert.equal(session.sqlRegistry.activeId, opened.sqlTabId);
+
+    session.sqlState.get(session.sqlRegistry.byId[created.sqlTabId].key).sql = "SELECT 2;";
+    coordinator.activateSql(created.sqlTabId);
+    assert.equal(session.sqlState.get(session.sqlRegistry.byId[created.sqlTabId].key).sql, "SELECT 2;");
+    coordinator.closeSql(created.sqlTabId);
+    assert.equal(session.sqlFiles.some((file) => file.name === "draft.sql"), true);
+    assert.equal(session.sqlState.has("sql:1"), false);
+});
+
+test("query execution requires an active SQL tab", () => {
     const session = stubSession({ conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } } });
     const coordinator = createWorkspaceCoordinator(session, stubAdapters());
 
     assert.deepEqual(coordinator.initiateQueryExecute(null, "SELECT 1", "execute"), { error: "QUERY_TAB_REQUIRED" });
-    const created = coordinator.newQuery();
-    assert.equal(created.created, true);
-    assert.equal(session.sqlRegistry.byId[created.sqlTabId].name, "New Query");
-    assert.equal(session.sqlState.get(session.sqlRegistry.byId[created.sqlTabId].key).sql, "");
-    assert.ok(coordinator.initiateQueryExecute(created.sqlTabId, "SELECT 1", "execute").queryToken);
 });
 
 test("console and query commands require a selected database", async () => {

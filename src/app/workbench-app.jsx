@@ -16,6 +16,7 @@ export function WorkbenchApp() {
     const sessionRef = useRef(null);
     const queryHooksRef = useRef(null);
     const setViewRef = useRef(null);
+    const newFileRef = useRef(null);
 
     useEffect(() => {
         if (!window.muxy)
@@ -63,7 +64,7 @@ export function WorkbenchApp() {
                 return;
             if (!hasDatabase(sessionRef.current))
                 return;
-            sessionRef.current.coordinator?.newQuery();
+            newFileRef.current?.();
         });
         muxy.events?.subscribe?.("command.run-query", () => {
             if (muxy.focused === false || !sessionRef.current)
@@ -117,6 +118,7 @@ export function WorkbenchApp() {
             session={state.session}
             queryHooksRef={queryHooksRef}
             setViewRef={setViewRef}
+            newFileRef={newFileRef}
         >
             <Workbench />
         </SessionProvider>
