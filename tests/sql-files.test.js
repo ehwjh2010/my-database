@@ -16,7 +16,7 @@ globalThis.muxy = {
     },
 };
 
-const { createSqlFile, ensureConsoleFile, getSqlNamespace, listSqlFiles, readSqlFile, validateFileName, filePath } = await import("../src/lib/sql-files.js");
+const { createSqlFile, ensureConsoleFile, getSqlNamespace, listSqlFiles, readSqlFile, renameSqlFile, trashSqlFile, validateFileName, filePath } = await import("../src/lib/sql-files.js");
 
 test("network SQL namespace uses the connection identity and database key", async () => {
     calls.length = 0;
@@ -157,6 +157,150 @@ test("createSqlFile is create-only and readSqlFile returns content with its obse
         await assert.rejects(createSqlFile(namespace, "DRAFT.sql"), { code: "FILE_EXISTS" });
         await writeFile(join(databaseDir, "e\u0301.sql"), "");
         await assert.rejects(createSqlFile(namespace, "é"), { code: "FILE_EXISTS" });
+    }
+    finally {
+        execHandler = async () => ({ exitCode: 0, stdout: "/Users/test-user\n", stderr: "" });
+        await rm(base, { recursive: true, force: true });
+    }
+});
+
+test("renameSqlFile changes the name only when the source version matches", async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "muxy-sql-files-")));
+    const rootDir = join(base, "root");
+    const fingerprint = "fingerprint";
+    const databaseKey = "db-key";
+    const databaseDir = join(rootDir, fingerprint, databaseKey);
+    const namespace = { rootDir, fingerprint, databaseKey, databaseDir };
+    execHandler = (argv) => new Promise((resolve, reject) => {
+        const child = spawn(argv[0], argv.slice(1));
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (chunk) => stdout += chunk);
+        child.stderr.on("data", (chunk) => stderr += chunk);
+        child.on("error", reject);
+        child.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+    });
+
+    try {
+        await ensureConsoleFile(namespace);
+        const source = await createSqlFile(namespace, "draft");
+        await writeFile(source.path, "SELECT 1;");
+        const observed = await readSqlFile(namespace, source.name);
+        const renamed = await renameSqlFile(namespace, source.name, "renamed.sql", observed.version);
+
+        assert.equal(renamed.file.name, "renamed.sql");
+        assert.equal(await readFile(join(databaseDir, "renamed.sql"), "utf8"), "SELECT 1;");
+        await assert.rejects(stat(join(databaseDir, "draft.sql")), { code: "ENOENT" });
+        assert.deepEqual(renamed.version, observed.version);
+    }
+    finally {
+        execHandler = async () => ({ exitCode: 0, stdout: "/Users/test-user\n", stderr: "" });
+        await rm(base, { recursive: true, force: true });
+    }
+});
+
+test("renameSqlFile leaves the source untouched on a stale version or target collision", async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "muxy-sql-files-")));
+    const rootDir = join(base, "root");
+    const fingerprint = "fingerprint";
+    const databaseKey = "db-key";
+    const databaseDir = join(rootDir, fingerprint, databaseKey);
+    const namespace = { rootDir, fingerprint, databaseKey, databaseDir };
+    execHandler = (argv) => new Promise((resolve, reject) => {
+        const child = spawn(argv[0], argv.slice(1));
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (chunk) => stdout += chunk);
+        child.stderr.on("data", (chunk) => stderr += chunk);
+        child.on("error", reject);
+        child.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+    });
+
+    try {
+        await ensureConsoleFile(namespace);
+        const source = await createSqlFile(namespace, "draft");
+        await writeFile(source.path, "SELECT 1;");
+        const observed = await readSqlFile(namespace, source.name);
+        await writeFile(source.path, "SELECT 2;");
+        await assert.rejects(renameSqlFile(namespace, source.name, "renamed.sql", observed.version), { code: "FILE_VERSION_CONFLICT" });
+        assert.equal(await readFile(source.path, "utf8"), "SELECT 2;");
+
+        const target = await createSqlFile(namespace, "renamed");
+        const current = await readSqlFile(namespace, source.name);
+        await assert.rejects(renameSqlFile(namespace, source.name, target.name, current.version), { code: "FILE_EXISTS" });
+        assert.equal(await readFile(source.path, "utf8"), "SELECT 2;");
+    }
+    finally {
+        execHandler = async () => ({ exitCode: 0, stdout: "/Users/test-user\n", stderr: "" });
+        await rm(base, { recursive: true, force: true });
+    }
+});
+
+test("trashSqlFile sends the versioned source to Finder and requires the path to disappear", async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "muxy-sql-files-")));
+    const rootDir = join(base, "root");
+    const fingerprint = "fingerprint";
+    const databaseKey = "db-key";
+    const databaseDir = join(rootDir, fingerprint, databaseKey);
+    const namespace = { rootDir, fingerprint, databaseKey, databaseDir };
+    execHandler = (argv) => {
+        if (argv[0] === "osascript")
+            return rm(join(databaseDir, "draft.sql")).then(() => ({ exitCode: 0, stdout: "", stderr: "" }));
+        return new Promise((resolve, reject) => {
+            const child = spawn(argv[0], argv.slice(1));
+            let stdout = "";
+            let stderr = "";
+            child.stdout.on("data", (chunk) => stdout += chunk);
+            child.stderr.on("data", (chunk) => stderr += chunk);
+            child.on("error", reject);
+            child.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+        });
+    };
+
+    try {
+        await ensureConsoleFile(namespace);
+        const source = await createSqlFile(namespace, "draft");
+        await writeFile(source.path, "SELECT 1;");
+        const observed = await readSqlFile(namespace, source.name);
+        const trashed = await trashSqlFile(namespace, source.name, observed.version);
+
+        assert.equal(trashed.trashed, true);
+        await assert.rejects(stat(source.path), { code: "ENOENT" });
+    }
+    finally {
+        execHandler = async () => ({ exitCode: 0, stdout: "/Users/test-user\n", stderr: "" });
+        await rm(base, { recursive: true, force: true });
+    }
+});
+
+test("trashSqlFile reports Finder failure without removing the source", async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "muxy-sql-files-")));
+    const rootDir = join(base, "root");
+    const fingerprint = "fingerprint";
+    const databaseKey = "db-key";
+    const databaseDir = join(rootDir, fingerprint, databaseKey);
+    const namespace = { rootDir, fingerprint, databaseKey, databaseDir };
+    execHandler = (argv) => {
+        if (argv[0] === "osascript")
+            return Promise.resolve({ exitCode: 1, stdout: "", stderr: "Finder denied" });
+        return new Promise((resolve, reject) => {
+            const child = spawn(argv[0], argv.slice(1));
+            let stdout = "";
+            let stderr = "";
+            child.stdout.on("data", (chunk) => stdout += chunk);
+            child.stderr.on("data", (chunk) => stderr += chunk);
+            child.on("error", reject);
+            child.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+        });
+    };
+
+    try {
+        await ensureConsoleFile(namespace);
+        const source = await createSqlFile(namespace, "draft");
+        await writeFile(source.path, "SELECT 1;");
+        const observed = await readSqlFile(namespace, source.name);
+        await assert.rejects(trashSqlFile(namespace, source.name, observed.version), { code: "FILE_TRASH_FAILED" });
+        assert.equal(await readFile(source.path, "utf8"), "SELECT 1;");
     }
     finally {
         execHandler = async () => ({ exitCode: 0, stdout: "/Users/test-user\n", stderr: "" });

@@ -1270,6 +1270,93 @@ test("file-backed SQL tabs create, open once, activate, isolate state, and close
     assert.equal(session.sqlState.has("sql:1"), false);
 });
 
+test("renaming an SQL tab updates file and tab metadata while preserving runtime state", async () => {
+    const version = { sha256: "hash", size: 9, mtimeMs: 4 };
+    const session = stubSession({
+        conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } },
+        sqlNamespace: { databaseDir: "/tmp/sql", fingerprint: "fingerprint", databaseKey: "fingerprint" },
+        sqlFiles: [{ name: "saved.sql", path: "/tmp/sql/saved.sql", size: 9, mtimeMs: 4, reserved: false }],
+        consoleState: { phase: "ready", files: [], error: null },
+    });
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({
+        sqlFiles: {
+            async readSqlFile() {
+                return { content: "SELECT 1;", version };
+            },
+            async renameSqlFile(namespace, source, target, expected) {
+                assert.equal(namespace, session.sqlNamespace);
+                assert.equal(source, "saved.sql");
+                assert.equal(target, "renamed.sql");
+                assert.deepEqual(expected, version);
+                return { file: { name: target, path: "/tmp/sql/renamed.sql", size: 9, mtimeMs: 4, reserved: false }, version };
+            },
+        },
+    }));
+
+    const opened = await coordinator.openSqlFile("saved.sql");
+    const entry = session.sqlRegistry.byId[opened.sqlTabId];
+    const state = session.sqlState.get(entry.key);
+    const owner = session.sqlOwners.get(entry.key);
+    state.sql = "SELECT 2;";
+    state.results = [{ rows: [{ id: 1 }] }];
+    state.exportContext = { result: state.results };
+
+    const renamed = await coordinator.renameSqlFile(opened.sqlTabId, "renamed.sql");
+
+    assert.deepEqual(renamed, { sqlTabId: opened.sqlTabId, name: "renamed.sql", file: { name: "renamed.sql", path: "/tmp/sql/renamed.sql", size: 9, mtimeMs: 4, reserved: false }, renamed: true });
+    assert.equal(session.sqlRegistry.byId[opened.sqlTabId].name, "renamed.sql");
+    assert.equal(session.sqlRegistry.byId[opened.sqlTabId].path, "/tmp/sql/renamed.sql");
+    assert.equal(session.sqlState.get(entry.key), state);
+    assert.equal(session.sqlState.get(entry.key).sql, "SELECT 2;");
+    assert.deepEqual(session.sqlState.get(entry.key).results, [{ rows: [{ id: 1 }] }]);
+    assert.equal(session.sqlOwners.get(entry.key), owner);
+    assert.deepEqual(session.sqlFiles.map((file) => file.name), ["renamed.sql"]);
+    assert.deepEqual(session.consoleState.files.map((file) => file.name), ["renamed.sql"]);
+});
+
+test("cancelling SQL Trash preserves the tab and confirming closes it after the file API succeeds", async () => {
+    const version = { sha256: "hash", size: 9, mtimeMs: 4 };
+    const confirmations = ["Cancel", "Delete"];
+    const session = stubSession({
+        conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } },
+        sqlNamespace: { databaseDir: "/tmp/sql", fingerprint: "fingerprint", databaseKey: "fingerprint" },
+        sqlFiles: [{ name: "saved.sql", path: "/tmp/sql/saved.sql", size: 9, mtimeMs: 4, reserved: false }],
+        consoleState: { phase: "ready", files: [], error: null },
+    });
+    let trashCalls = 0;
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({
+        confirm: async () => confirmations.shift(),
+        sqlFiles: {
+            async readSqlFile() {
+                return { content: "SELECT 1;", version };
+            },
+            async trashSqlFile(namespace, name, expected) {
+                trashCalls += 1;
+                assert.equal(namespace, session.sqlNamespace);
+                assert.equal(name, "saved.sql");
+                assert.deepEqual(expected, version);
+                return { name, path: "/tmp/sql/saved.sql", trashed: true };
+            },
+        },
+    }));
+
+    const opened = await coordinator.openSqlFile("saved.sql");
+    const key = session.sqlRegistry.byId[opened.sqlTabId].key;
+    session.sqlState.get(key).sql = "SELECT 2;";
+
+    assert.deepEqual(await coordinator.trashSqlFile(opened.sqlTabId), { outcome: "cancelled" });
+    assert.deepEqual(session.sqlRegistry.order, [opened.sqlTabId]);
+    assert.equal(session.sqlState.get(key).sql, "SELECT 2;");
+    assert.equal(trashCalls, 0);
+
+    assert.deepEqual(await coordinator.trashSqlFile(opened.sqlTabId), { outcome: "trashed", sqlTabId: opened.sqlTabId, activeId: null });
+    assert.deepEqual(session.sqlRegistry.order, []);
+    assert.equal(session.sqlState.has(key), false);
+    assert.equal(session.sqlOwners.has(key), false);
+    assert.deepEqual(session.sqlFiles, []);
+    assert.equal(trashCalls, 1);
+});
+
 test("query execution requires an active SQL tab", () => {
     const session = stubSession({ conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } } });
     const coordinator = createWorkspaceCoordinator(session, stubAdapters());

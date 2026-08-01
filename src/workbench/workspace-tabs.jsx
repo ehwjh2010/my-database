@@ -3,11 +3,20 @@ import { Icon } from "../ui/icon.jsx";
 import { ContextMenu } from "../ui/context-menu.jsx";
 import { closeWorkspaceTabIntent, projectWorkspaceTabs, workspaceSwitchMenuItems } from "./workspace-chrome.js";
 
-export function WorkspaceTabs({ order = [], activeId, byId = {}, changesByKey, onActivate, onClose, newMenuItems = [] }) {
+export function WorkspaceTabs({ order = [], activeId, byId = {}, changesByKey, onActivate, onClose, newMenuItems = [], tabMenuItems }) {
     const [menu, setMenu] = useState(null);
     const [newMenu, setNewMenu] = useState(null);
+    const [tabMenu, setTabMenu] = useState(null);
     const tabs = projectWorkspaceTabs({ order, byId, activeId, changesByKey });
     const items = workspaceSwitchMenuItems({ order, byId, onActivate });
+    const openTabMenu = (event, tab) => {
+        const nextItems = tabMenuItems?.(tab) || [];
+        if (!nextItems.length)
+            return;
+        event.preventDefault();
+        event.stopPropagation();
+        setTabMenu({ x: event.clientX, y: event.clientY, items: nextItems });
+    };
 
     return (
         <div className="workspace-tabs" data-testid="workspace-tabs">
@@ -23,6 +32,7 @@ export function WorkspaceTabs({ order = [], activeId, byId = {}, changesByKey, o
                         tabIndex={0}
                         title={tab.title}
                         onClick={() => onActivate(tab.id)}
+                        onContextMenu={(event) => openTabMenu(event, tab)}
                         onKeyDown={(event) => {
                             if (event.target !== event.currentTarget)
                                 return;
@@ -71,6 +81,7 @@ export function WorkspaceTabs({ order = [], activeId, byId = {}, changesByKey, o
             </button>
             {menu ? <ContextMenu x={menu.x} y={menu.y} items={items} onClose={() => setMenu(null)} /> : null}
             {newMenu ? <ContextMenu x={newMenu.x} y={newMenu.y} items={newMenuItems} onClose={() => setNewMenu(null)} /> : null}
+            {tabMenu ? <ContextMenu x={tabMenu.x} y={tabMenu.y} items={tabMenu.items} onClose={() => setTabMenu(null)} /> : null}
         </div>
     );
 }

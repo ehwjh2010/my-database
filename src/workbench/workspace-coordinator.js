@@ -1,5 +1,5 @@
 import { clearChanges } from "../grid/pending-changes.js";
-import { createSqlFile, ensureConsoleFile, getSqlNamespace, listSqlFiles, readSqlFile, validateFileName } from "../lib/sql-files.js";
+import { createSqlFile, ensureConsoleFile, getSqlNamespace, listSqlFiles, readSqlFile, renameSqlFile, trashSqlFile, validateFileName } from "../lib/sql-files.js";
 import { clearDataRuntime, clearDataRuntimes, dataRuntimeFor, nextDataRequest, refreshDataRuntime } from "./data-runtime.js";
 import { currentDatabase, hasDatabase } from "./state.js";
 import { initialWorkspaceState, objectCacheKey, pendingChangeCountFor, sameObjectRef, workspaceReducer } from "./workspace-state.js";
@@ -95,7 +95,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         const entry = sqlEntryById(sqlTabId);
         return entry ? session.sqlState.get(entry.key) : null;
     };
-    const filesApi = () => adapters.sqlFiles || { getNamespace: getSqlNamespace, ensureConsoleFile, listSqlFiles, createSqlFile, readSqlFile };
+    const filesApi = () => adapters.sqlFiles || { getNamespace: getSqlNamespace, ensureConsoleFile, listSqlFiles, createSqlFile, readSqlFile, renameSqlFile, trashSqlFile };
     const sortFiles = (files) => [...files].sort((left, right) => {
         if (left.reserved !== right.reserved)
             return left.reserved ? -1 : 1;
@@ -213,6 +213,60 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             const namespace = session.sqlNamespace || await api.getNamespace({ conn: session.conn, database: currentDatabase(session) });
             const read = await api.readSqlFile(namespace, name);
             return createSqlTab(file, read.content, read.version);
+        },
+
+        async renameSqlFile(sqlTabId, rawName, expectedVersion) {
+            if (!hasDatabase(session))
+                return { error: "DATABASE_REQUIRED" };
+            const entry = sqlEntryById(sqlTabId);
+            if (!entry)
+                return { error: "QUERY_TAB_REQUIRED" };
+            if (entry.reserved)
+                return { error: "FILE_RESERVED" };
+            const name = validateFileName(rawName);
+            const api = filesApi();
+            const namespace = session.sqlNamespace || await api.getNamespace({ conn: session.conn, database: currentDatabase(session) });
+            const result = await api.renameSqlFile(namespace, entry.name, name, expectedVersion || entry.observedVersion);
+            const file = result.file;
+            const nextEntry = { ...entry, name: file.name, title: file.name, path: file.path, observedVersion: result.version };
+            session.sqlRegistry = { ...session.sqlRegistry, byId: { ...session.sqlRegistry.byId, [sqlTabId]: nextEntry } };
+            const state = session.sqlState.get(entry.key);
+            if (state)
+                state.observedVersion = result.version;
+            setSqlFiles([...session.sqlFiles.filter((item) => item.name !== entry.name), file]);
+            emit();
+            return { sqlTabId, name: file.name, file, renamed: true };
+        },
+
+        async trashSqlFile(sqlTabId) {
+            if (!hasDatabase(session))
+                return { error: "DATABASE_REQUIRED" };
+            const entry = sqlEntryById(sqlTabId);
+            if (!entry)
+                return { error: "QUERY_TAB_REQUIRED" };
+            if (entry.reserved)
+                return { error: "FILE_RESERVED" };
+            let choice;
+            try {
+                choice = await adapters.confirm?.({
+                    title: "Move SQL file to Trash?",
+                    message: `Move ${entry.name} to the Finder Trash?`,
+                    buttons: ["Delete", "Cancel"],
+                    cancel: "Cancel",
+                    style: "warning",
+                });
+            }
+            catch {
+                return { error: "CONFIRMATION_FAILED" };
+            }
+            if (choice !== "Delete")
+                return { outcome: "cancelled" };
+            const api = filesApi();
+            const namespace = session.sqlNamespace || await api.getNamespace({ conn: session.conn, database: currentDatabase(session) });
+            await api.trashSqlFile(namespace, entry.name, entry.observedVersion);
+            setSqlFiles(session.sqlFiles.filter((item) => item.name !== entry.name));
+            const closed = coordinator.closeSql(sqlTabId);
+            return { outcome: "trashed", sqlTabId, activeId: closed.activeId };
         },
 
         activateSql(sqlTabId) {

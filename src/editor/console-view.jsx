@@ -3,8 +3,8 @@ import { EmptyState } from "../ui/empty-state.jsx";
 import { Icon } from "../ui/icon.jsx";
 import { Modal } from "../ui/modal.jsx";
 
-export function NewSqlFileModal({ error, onClose, onSubmit }) {
-    const [name, setName] = useState("");
+function SqlFileNameModal({ title, submitLabel, testId, initialName = "", error, onClose, onSubmit }) {
+    const [name, setName] = useState(initialName);
     const [busy, setBusy] = useState(false);
 
     const submit = async () => {
@@ -18,21 +18,21 @@ export function NewSqlFileModal({ error, onClose, onSubmit }) {
     return (
         <Modal
             icon="file"
-            title="New SQL File"
+            title={title}
             size="sm"
             onClose={onClose}
             footer={(
                 <>
                     <button className="btn" onClick={onClose} disabled={busy}>Cancel</button>
-                    <button className="btn btn-primary" onClick={submit} disabled={busy}>Create</button>
+                    <button className="btn btn-primary" onClick={submit} disabled={busy}>{submitLabel}</button>
                 </>
             )}
         >
             <div className="flex flex-col gap-[var(--s3)] px-[var(--s7)] py-[var(--s6)]">
-                <label htmlFor="new-sql-file-name">File name</label>
+                <label htmlFor={testId}>File name</label>
                 <input
-                    id="new-sql-file-name"
-                    data-testid="new-sql-file-name"
+                    id={testId}
+                    data-testid={testId}
                     autoFocus
                     value={name}
                     onChange={(event) => setName(event.target.value)}
@@ -47,6 +47,14 @@ export function NewSqlFileModal({ error, onClose, onSubmit }) {
             </div>
         </Modal>
     );
+}
+
+export function NewSqlFileModal({ error, onClose, onSubmit }) {
+    return <SqlFileNameModal title="New SQL File" submitLabel="Create" testId="new-sql-file-name" error={error} onClose={onClose} onSubmit={onSubmit} />;
+}
+
+export function RenameSqlFileModal({ name, error, onClose, onSubmit }) {
+    return <SqlFileNameModal title="Rename SQL File" submitLabel="Rename" testId="rename-sql-file-name" initialName={name} error={error} onClose={onClose} onSubmit={onSubmit} />;
 }
 
 export function ConsoleView({ state, hasDatabase, hasQueryTab, onNewQuery, onRetry }) {

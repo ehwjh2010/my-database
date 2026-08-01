@@ -8,7 +8,7 @@ import { closeTunnel } from "../lib/tunnel.js";
 import { clearCredFiles } from "../lib/cred-file.js";
 import { DataView } from "../grid/data-view.jsx";
 import { QueryView } from "../editor/query-view.jsx";
-import { ConsoleView, NewSqlFileModal } from "../editor/console-view.jsx";
+import { ConsoleView, NewSqlFileModal, RenameSqlFileModal } from "../editor/console-view.jsx";
 import { StructureView } from "../structure/structure-view.jsx";
 import { TableDesignerModal } from "../structure/table-designer.jsx";
 import { TransferMenuModal } from "../transfer/transfer-menu.jsx";
@@ -25,6 +25,9 @@ function fileErrorMessage(error) {
         FILE_RESERVED: "console.sql is protected.",
         FILE_EXISTS: "A SQL file with this name already exists.",
         FILE_NOT_FOUND: "The SQL file is no longer available.",
+        FILE_VERSION_CONFLICT: "The SQL file changed outside Muxy. Reload it before renaming or deleting.",
+        FILE_RENAME_FAILED: "The SQL file could not be renamed.",
+        FILE_TRASH_FAILED: "The SQL file could not be moved to the Finder Trash.",
         DATABASE_REQUIRED: "Select a database first.",
     }[code] || error?.message || String(error);
 }
@@ -35,6 +38,8 @@ export function Workbench() {
     const [transferOpen, setTransferOpen] = useState(false);
     const [newFileOpen, setNewFileOpen] = useState(false);
     const [newFileError, setNewFileError] = useState(null);
+    const [renameFile, setRenameFile] = useState(null);
+    const [renameFileError, setRenameFileError] = useState(null);
     const consolePhase = session.consoleState?.phase;
 
     const openNewFile = () => {
@@ -75,6 +80,41 @@ export function Workbench() {
         }
     };
 
+    const openRenameFile = (tab) => {
+        const entry = session.sqlRegistry.byId[tab.id];
+        if (!entry || entry.reserved)
+            return;
+        setRenameFile({ id: tab.id, name: entry.name });
+        setRenameFileError(null);
+    };
+
+    const renameFileSubmit = async (name) => {
+        try {
+            const result = await session.coordinator.renameSqlFile(renameFile.id, name);
+            if (result?.error) {
+                setRenameFileError(fileErrorMessage(result));
+                return false;
+            }
+            setRenameFile(null);
+            return true;
+        }
+        catch (error) {
+            setRenameFileError(fileErrorMessage(error));
+            return false;
+        }
+    };
+
+    const trashFile = async (tab) => {
+        try {
+            const result = await session.coordinator.trashSqlFile(tab.id);
+            if (result?.error)
+                await toast(fileErrorMessage(result), "error");
+        }
+        catch (error) {
+            await toast(fileErrorMessage(error), "error");
+        }
+    };
+
     useEffect(() => {
         if (!newFileRef)
             return;
@@ -85,6 +125,18 @@ export function Workbench() {
     const newMenuItems = surface === "console" && consolePhase === "ready"
         ? sqlFileMenuItems({ files: session.sqlFiles, order: session.sqlRegistry.order, byId: session.sqlRegistry.byId, onCreate: openNewFile, onOpen: openFile })
         : [];
+    const tabMenuItems = surface === "console" && consolePhase === "ready"
+        ? (tab) => {
+            const entry = session.sqlRegistry.byId[tab.id];
+            if (!entry || entry.reserved)
+                return [];
+            return [
+                { label: "Rename...", onClick: () => openRenameFile(tab) },
+                { separator: true },
+                { label: "Delete", onClick: () => trashFile(tab) },
+            ];
+        }
+        : undefined;
 
     useEffect(() => {
         if (hasDatabase && consolePhase === "missing")
@@ -132,12 +184,14 @@ export function Workbench() {
                         onActivate={surface === "console" ? activateSql : activateWorkspace}
                         onClose={surface === "console" ? closeSql : closeWorkspace}
                         newMenuItems={surface === "console" ? newMenuItems : []}
+                        tabMenuItems={tabMenuItems}
                     />
                     <div className="flex min-h-0 min-w-0 flex-1 flex-col">{main()}</div>
                 </div>
             </div>
             <Statusbar />
             {newFileOpen ? <NewSqlFileModal error={newFileError} onClose={() => setNewFileOpen(false)} onSubmit={createFile} /> : null}
+            {renameFile ? <RenameSqlFileModal name={renameFile.name} error={renameFileError} onClose={() => setRenameFile(null)} onSubmit={renameFileSubmit} /> : null}
             {designerOpen ? (
                 <TableDesignerModal session={session} onClose={() => setDesignerOpen(false)} />
             ) : null}

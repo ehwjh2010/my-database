@@ -156,9 +156,11 @@ open(my $fh, "<:raw", $path) or fail("FILE_READ_FAILED", $path . ": " . $!);
 local $/;
 my $bytes = <$fh>;
 close($fh) or fail("FILE_READ_FAILED", $path . ": " . $!);
+my $size = 0 + length($bytes // "");
+my $sha256 = sha256_hex($bytes // "");
 my $content;
 eval { $content = decode("UTF-8", $bytes // "", FB_CROAK); 1 } or fail("FILE_READ_FAILED", $path . ": invalid UTF-8");
-print encode_json({ content => $content, version => { sha256 => sha256_hex($bytes // ""), size => 0 + length($bytes // ""), mtimeMs => 0 + ($st[9] * 1000) } });
+print encode_json({ content => $content, version => { sha256 => $sha256, size => $size, mtimeMs => 0 + ($st[9] * 1000) } });
 `;
 const LIST_SCRIPT = String.raw`
 use Cwd qw(realpath);
@@ -212,6 +214,71 @@ while (defined(my $name = readdir($dh))) {
 }
 closedir($dh) or fail("FILE_LIST_FAILED", $dir . ": " . $!);
 print encode_json(\@files);
+`;
+const RENAME_SCRIPT = String.raw`
+use Cwd qw(realpath);
+use Digest::SHA qw(sha256_hex);
+use Encode qw(decode);
+use Fcntl qw(:mode);
+use JSON::PP qw(encode_json);
+use Unicode::Normalize qw(NFC);
+sub fail { die $_[0] . ": " . $_[1] . "\n"; }
+sub check_dir {
+    my ($path) = @_;
+    my @st = lstat($path) or fail("FILE_PERMISSION_FAILED", $path . ": " . $!);
+    fail("FILE_UNSAFE_TYPE", $path . " is a symlink") if S_ISLNK($st[2]);
+    fail("FILE_UNSAFE_TYPE", $path . " is not a directory") unless S_ISDIR($st[2]);
+    fail("FILE_PERMISSION_FAILED", $path . " owner mismatch") if $st[4] != $<;
+    chmod(0700, $path) or fail("FILE_PERMISSION_FAILED", $path . ": " . $!);
+}
+sub folded { return lc(NFC(decode("UTF-8", $_[0]))); }
+sub current_version {
+    my ($path) = @_;
+    my @st = lstat($path) or fail("FILE_NOT_FOUND", $path . ": " . $!);
+    fail("FILE_UNSAFE_TYPE", $path . " is a symlink") if S_ISLNK($st[2]);
+    fail("FILE_UNSAFE_TYPE", $path . " is not a regular file") unless S_ISREG($st[2]);
+    fail("FILE_PERMISSION_FAILED", $path . " owner mismatch") if $st[4] != $<;
+    chmod(0600, $path) or fail("FILE_PERMISSION_FAILED", $path . ": " . $!);
+    open(my $fh, "<:raw", $path) or fail("FILE_READ_FAILED", $path . ": " . $!);
+    local $/;
+    my $bytes = <$fh> // "";
+    close($fh) or fail("FILE_READ_FAILED", $path . ": " . $!);
+    return { sha256 => sha256_hex($bytes), size => 0 + length($bytes), mtimeMs => 0 + ($st[9] * 1000) };
+}
+my ($rootDir, $fingerprintDir, $databaseDir, $sourcePath, $targetPath, $sourceName, $targetName, $expectedSha, $expectedSize, $expectedMtime) = @ARGV;
+check_dir($rootDir);
+check_dir($fingerprintDir);
+check_dir($databaseDir);
+my $real = realpath($databaseDir);
+fail("FILE_UNSAFE_TYPE", $databaseDir . " is outside its real path") unless defined($real) && $real eq $databaseDir;
+my $version = current_version($sourcePath);
+fail("FILE_VERSION_CONFLICT", $sourceName) unless $version->{sha256} eq $expectedSha && $version->{size} == $expectedSize && $version->{mtimeMs} == $expectedMtime;
+opendir(my $dh, $databaseDir) or fail("FILE_RENAME_FAILED", $databaseDir . ": " . $!);
+while (defined(my $existing = readdir($dh))) {
+    $existing = decode("UTF-8", $existing);
+    fail("FILE_EXISTS", $targetName) if folded($existing) eq folded($targetName);
+}
+closedir($dh) or fail("FILE_RENAME_FAILED", $databaseDir . ": " . $!);
+rename($sourcePath, $targetPath) or fail("FILE_RENAME_FAILED", $sourcePath . ": " . $!);
+my @st = lstat($targetPath) or fail("FILE_RENAME_FAILED", $targetPath . ": " . $!);
+fail("FILE_UNSAFE_TYPE", $targetPath . " is not a regular file") unless S_ISREG($st[2]);
+chmod(0600, $targetPath) or fail("FILE_PERMISSION_FAILED", $targetPath . ": " . $!);
+print encode_json({ file => { name => $targetName, path => $targetPath, size => 0 + $st[7], mtimeMs => 0 + ($st[9] * 1000), reserved => JSON::PP::false() }, version => $version });
+`;
+const VERIFY_TRASH_SCRIPT = String.raw`
+my $path = $ARGV[0];
+my @st = lstat($path);
+die "FILE_TRASH_FAILED: $path still exists\n" if @st;
+print "ok";
+`;
+const FINDER_TRASH_SCRIPT = String.raw`
+on run argv
+    if (count of argv) is not 1 then error "FILE_TRASH_FAILED: invalid path"
+    set targetPath to item 1 of argv
+    tell application "Finder"
+        delete POSIX file targetPath
+    end tell
+end run
 `;
 
 export class SqlFileError extends Error {
@@ -345,6 +412,46 @@ export async function createSqlFile(namespace, input) {
     const path = filePath(namespace, name);
     const output = await execute(["perl", "-MJSON::PP=encode_json", "-e", CREATE_SCRIPT, rootDir, fingerprintDir, databaseDir, path, name], "FILE_WRITE_FAILED");
     return parseJson(output, "FILE_WRITE_FAILED");
+}
+
+export async function renameSqlFile(namespace, sourceInput, targetInput, expectedVersion) {
+    const { rootDir, fingerprintDir, databaseDir } = namespacePaths(namespace);
+    const source = validateFileName(sourceInput);
+    const target = validateFileName(targetInput);
+    if (!expectedVersion || typeof expectedVersion.sha256 !== "string")
+        throw new SqlFileError("FILE_VERSION_REQUIRED");
+    const output = await execute([
+        "perl",
+        "-MDigest::SHA=sha256_hex",
+        "-MJSON::PP=encode_json",
+        "-e",
+        RENAME_SCRIPT,
+        rootDir,
+        fingerprintDir,
+        databaseDir,
+        filePath(namespace, source),
+        filePath(namespace, target),
+        source,
+        target,
+        expectedVersion.sha256,
+        String(expectedVersion.size),
+        String(expectedVersion.mtimeMs),
+    ], "FILE_RENAME_FAILED");
+    return parseJson(output, "FILE_RENAME_FAILED");
+}
+
+export async function trashSqlFile(namespace, input, expectedVersion) {
+    namespacePaths(namespace);
+    const name = validateFileName(input);
+    if (!expectedVersion || typeof expectedVersion.sha256 !== "string")
+        throw new SqlFileError("FILE_VERSION_REQUIRED");
+    const path = filePath(namespace, name);
+    const current = await readSqlFile(namespace, name);
+    if (current.version.sha256 !== expectedVersion.sha256 || current.version.size !== expectedVersion.size || current.version.mtimeMs !== expectedVersion.mtimeMs)
+        throw new SqlFileError("FILE_VERSION_CONFLICT", name);
+    await execute(["osascript", "-e", FINDER_TRASH_SCRIPT, path], "FILE_TRASH_FAILED");
+    await execute(["perl", "-e", VERIFY_TRASH_SCRIPT, path], "FILE_TRASH_FAILED");
+    return { name, path, trashed: true };
 }
 
 export async function readSqlFile(namespace, input) {
