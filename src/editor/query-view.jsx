@@ -55,10 +55,14 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
     };
 
     const setDraftText = useCallback((sql) => {
-        const store = stateMap.get(key);
-        if (store) store.sql = sql;
+        if (isSqlTab)
+            session.coordinator.updateSqlDraft(tabId, sql);
+        else {
+            const store = stateMap.get(key);
+            if (store) store.sql = sql;
+        }
         setDraft(sql);
-    }, [key, stateMap]);
+    }, [isSqlTab, key, session.coordinator, stateMap, tabId]);
 
     const execute = useCallback(
         async (sql, mode) => {
@@ -84,7 +88,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                     setResults(stateMap.get(key).results);
                     setStatus("Error");
                 }
-                if (!isExplain && isCurrentQueryRequest(session, snapshot))
+                if (!isSqlTab && !isExplain && isCurrentQueryRequest(session, snapshot))
                     await appendHistory(session.conn.id, { id: String(started), sql: snapshot.sql.slice(0, 4096), startedAt: started, durationMs: Date.now() - started, ok: false });
                 return;
             }
@@ -96,7 +100,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                 setResults(stateMap.get(key).results);
                 setStatus(`Done \u00b7 ${rows} rows \u00b7 ${duration}ms`);
             }
-            if (!isExplain && isCurrentQueryRequest(session, snapshot))
+            if (!isSqlTab && !isExplain && isCurrentQueryRequest(session, snapshot))
                 await appendHistory(session.conn.id, { id: String(started), sql: snapshot.sql.slice(0, 4096), startedAt: started, durationMs: duration, ok: true, rows });
             } finally {
                 if (isCurrentQueryRequest(session, snapshot) && active) {
@@ -108,16 +112,13 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
         [active, key, session, setStatus, stateMap, tabId],
     );
 
-    const run = useCallback(
-        async (mode) => {
-            if (!editorRef.current) return;
-            const sql = mode === "all" ? editorRef.current.state.doc.toString().trim() : currentStatement();
-            if (!sql)
-                return;
-            await execute(sql, "execute");
-        },
-        [execute, session],
-    );
+    const run = useCallback(async () => {
+        if (!editorRef.current) return;
+        const sql = currentStatement();
+        if (!sql)
+            return;
+        await execute(sql, "execute");
+    }, [execute]);
 
     const runRef = useRef(run);
     runRef.current = run;
@@ -130,7 +131,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
     };
 
     useEffect(() => {
-        queryHooksRef.current = { run: () => runRef.current("cursor") };
+        queryHooksRef.current = { run: () => runRef.current() };
         return () => { queryHooksRef.current = null; };
     }, [queryHooksRef]);
 
@@ -153,13 +154,10 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                         <Icon name="play" />
                         Run
                     </button>
-                    <button className="btn btn-compact" title="Run every statement in this workspace" onClick={() => run("all")}>
-                        Run All
-                    </button>
                     <button className="btn btn-compact" title="Explain the statement at the cursor" onClick={runExplain}>
                         Explain
                     </button>
-                    <span className="text-[var(--font-footnote)] text-muted-foreground">{"\u2318\u23ce statement \u00b7 \u21e7\u2318\u23ce all"}</span>
+                    <span className="text-[var(--font-footnote)] text-muted-foreground">{"\u2318\u23ce statement"}</span>
                     <div className="flex-1" />
                     <button className="icon-btn" title="Export results as CSV" onClick={exportResults}>
                         <Icon name="download" />
@@ -167,9 +165,11 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                     <button className="icon-btn" title="Query history" onClick={() => togglePanel("history")}>
                         <Icon name="clock" />
                     </button>
-                    <button className="icon-btn" title="Saved queries" onClick={() => togglePanel("saved")}>
-                        <Icon name="star" />
-                    </button>
+                    {!isSqlTab ? (
+                        <button className="icon-btn" title="Saved queries" onClick={() => togglePanel("saved")}>
+                            <Icon name="star" />
+                        </button>
+                    ) : null}
                 </div>
                 <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
                     <SqlEditorView
@@ -178,8 +178,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                         initialDoc={draft}
                         viewRef={editorRef}
                         onDocChange={(doc) => setDraftText(doc)}
-                        onRun={() => runRef.current("cursor")}
-                        onRunAll={() => runRef.current("all")}
+                        onRun={() => runRef.current()}
                     />
                 </div>
                 <div className="min-h-0 border-t" style={{ borderColor: "var(--muxy-border)", flex: "0 0 45%" }}>
@@ -189,7 +188,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
             {panel === "history" ? (
                 <HistoryPanel session={session} refreshToken={historyToken} onPick={(sql) => insertSql(editorRef.current, sql)} />
             ) : null}
-            {panel === "saved" ? (
+            {panel === "saved" && !isSqlTab ? (
                 <div className="w-[var(--side-panel-width)] flex-shrink-0 border-l" style={{ borderColor: "var(--muxy-border)" }}>
                     <SavedPanel
                         session={session}

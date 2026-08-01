@@ -19,7 +19,7 @@ export function projectWorkspaceTabs({ order = [], byId = {}, activeId = null, c
                 title: workspace.kind === "sql" ? workspace.title : workspaceTabTitle(workspace.ref),
                 icon: workspace.kind === "sql" ? "code" : workspace.ref.kind === "view" ? "eye" : "table",
                 active: workspace.id === activeId,
-                dirty: pendingChangeCountFor(changesByKey, workspace.key) > 0,
+                dirty: Boolean(workspace.dirty) || pendingChangeCountFor(changesByKey, workspace.key) > 0,
                 dirtyLabel: WORKSPACE_DIRTY_LABEL,
                 closeLabel: `Close ${name}`,
             };

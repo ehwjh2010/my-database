@@ -1,5 +1,5 @@
 import { clearChanges } from "../grid/pending-changes.js";
-import { createSqlFile, ensureConsoleFile, getSqlNamespace, listSqlFiles, readSqlFile, renameSqlFile, trashSqlFile, validateFileName } from "../lib/sql-files.js";
+import { createSqlFile, ensureConsoleFile, getSqlNamespace, listSqlFiles, readSqlFile, renameSqlFile, saveSqlFile, trashSqlFile, validateFileName } from "../lib/sql-files.js";
 import { clearDataRuntime, clearDataRuntimes, dataRuntimeFor, nextDataRequest, refreshDataRuntime } from "./data-runtime.js";
 import { currentDatabase, hasDatabase } from "./state.js";
 import { initialWorkspaceState, objectCacheKey, pendingChangeCountFor, sameObjectRef, workspaceReducer } from "./workspace-state.js";
@@ -49,7 +49,14 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         session.structureCache?.delete(key);
         session.queryState?.delete(key);
     };
+    const clearSqlSaveTimers = () => {
+        for (const owner of session.sqlOwners.values()) {
+            if (owner.saveTimer)
+                clearTimeout(owner.saveTimer);
+        }
+    };
     const clearSqlRuntime = () => {
+        clearSqlSaveTimers();
         session.sqlState.clear();
         session.sqlOwners.clear();
         session.sqlRegistry = { order: [], activeId: null, byId: {} };
@@ -95,7 +102,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         const entry = sqlEntryById(sqlTabId);
         return entry ? session.sqlState.get(entry.key) : null;
     };
-    const filesApi = () => adapters.sqlFiles || { getNamespace: getSqlNamespace, ensureConsoleFile, listSqlFiles, createSqlFile, readSqlFile, renameSqlFile, trashSqlFile };
+    const filesApi = () => adapters.sqlFiles || { getNamespace: getSqlNamespace, ensureConsoleFile, listSqlFiles, createSqlFile, readSqlFile, renameSqlFile, saveSqlFile, trashSqlFile };
     const sortFiles = (files) => [...files].sort((left, right) => {
         if (left.reserved !== right.reserved)
             return left.reserved ? -1 : 1;
@@ -113,16 +120,75 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
     const createSqlTab = (file, content, observedVersion) => {
         const id = ++session.sqlTabIdCounter;
         const key = `sql:${id}`;
-        session.sqlState.set(key, { sql: content, results: null, exportContext: null, observedVersion });
-        session.sqlOwners.set(key, { queryRequest: 0 });
+        session.sqlState.set(key, { sql: content, results: null, exportContext: null, observedVersion, dirty: false, saveError: null });
+        session.sqlOwners.set(key, { queryRequest: 0, saveTimer: null, savePromise: null, savePending: false });
         session.sqlRegistry = {
             order: [...session.sqlRegistry.order, id],
             activeId: id,
-            byId: { ...session.sqlRegistry.byId, [id]: { id, key, kind: "sql", name: file.name, title: file.name, path: file.path, reserved: Boolean(file.reserved), observedVersion } },
+            byId: { ...session.sqlRegistry.byId, [id]: { id, key, kind: "sql", name: file.name, title: file.name, path: file.path, reserved: Boolean(file.reserved), observedVersion, dirty: false } },
         };
         session.surface = "console";
         emit();
         return { sqlTabId: id, created: true, activeId: id };
+    };
+    const updateSqlEntry = (sqlTabId, changes) => {
+        const entry = sqlEntryById(sqlTabId);
+        if (!entry)
+            return null;
+        session.sqlRegistry = { ...session.sqlRegistry, byId: { ...session.sqlRegistry.byId, [sqlTabId]: { ...entry, ...changes } } };
+        return session.sqlRegistry.byId[sqlTabId];
+    };
+    const flushSqlDraft = async (sqlTabId, owner) => {
+        if (owner.savePromise) {
+            owner.savePending = true;
+            return;
+        }
+        const entry = sqlEntryById(sqlTabId);
+        const state = sqlStateFor(sqlTabId);
+        if (!entry || !state || session.sqlOwners.get(entry.key) !== owner)
+            return;
+        const content = state.sql;
+        const expectedVersion = state.observedVersion;
+        owner.savePromise = (async () => {
+            try {
+                const api = filesApi();
+                const namespace = session.sqlNamespace || await api.getNamespace({ conn: session.conn, database: currentDatabase(session) });
+                const result = await api.saveSqlFile(namespace, entry.name, content, expectedVersion);
+                if (session.sqlOwners.get(entry.key) !== owner)
+                    return;
+                const currentState = session.sqlState.get(entry.key);
+                const dirty = currentState.sql !== content;
+                currentState.observedVersion = result.version;
+                currentState.dirty = dirty;
+                currentState.saveError = null;
+                updateSqlEntry(sqlTabId, { observedVersion: result.version, dirty });
+                emit();
+            }
+            catch (error) {
+                if (session.sqlOwners.get(entry.key) !== owner)
+                    return;
+                const currentState = session.sqlState.get(entry.key);
+                currentState.dirty = true;
+                currentState.saveError = error;
+                updateSqlEntry(sqlTabId, { dirty: true });
+                emit();
+            }
+        })();
+        await owner.savePromise;
+        owner.savePromise = null;
+        const currentState = session.sqlState.get(entry.key);
+        if (session.sqlOwners.get(entry.key) === owner && (owner.savePending || currentState?.sql !== content)) {
+            owner.savePending = false;
+            void flushSqlDraft(sqlTabId, owner);
+        }
+    };
+    const scheduleSqlDraft = (sqlTabId, owner) => {
+        if (owner.saveTimer)
+            clearTimeout(owner.saveTimer);
+        owner.saveTimer = setTimeout(() => {
+            owner.saveTimer = null;
+            void flushSqlDraft(sqlTabId, owner);
+        }, 500);
     };
 
     const coordinator = {
@@ -215,6 +281,21 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             return createSqlTab(file, read.content, read.version);
         },
 
+        updateSqlDraft(sqlTabId, content) {
+            const entry = sqlEntryById(sqlTabId);
+            const state = sqlStateFor(sqlTabId);
+            if (!entry || !state)
+                return { error: "QUERY_TAB_REQUIRED" };
+            state.sql = content;
+            state.dirty = true;
+            state.saveError = null;
+            const owner = session.sqlOwners.get(entry.key);
+            updateSqlEntry(sqlTabId, { dirty: true });
+            scheduleSqlDraft(sqlTabId, owner);
+            emit();
+            return { sqlTabId, dirty: true };
+        },
+
         async renameSqlFile(sqlTabId, rawName, expectedVersion) {
             if (!hasDatabase(session))
                 return { error: "DATABASE_REQUIRED" };
@@ -286,6 +367,9 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             const order = session.sqlRegistry.order.filter((id) => id !== sqlTabId);
             const nextActive = session.sqlRegistry.activeId === sqlTabId ? order[Math.max(0, index - 1)] || order[0] || null : session.sqlRegistry.activeId;
             const { [sqlTabId]: _, ...byId } = session.sqlRegistry.byId;
+            const owner = session.sqlOwners.get(entry.key);
+            if (owner?.saveTimer)
+                clearTimeout(owner.saveTimer);
             session.sqlRegistry = { order, activeId: nextActive, byId };
             session.sqlState.delete(entry.key);
             session.sqlOwners.delete(entry.key);

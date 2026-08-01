@@ -1270,6 +1270,91 @@ test("file-backed SQL tabs create, open once, activate, isolate state, and close
     assert.equal(session.sqlState.has("sql:1"), false);
 });
 
+test("SQL draft edits debounce and serialize autosaves while keeping the latest draft visible", async () => {
+    const firstSave = deferred();
+    const version = { sha256: "hash", size: 9, mtimeMs: 4 };
+    const savedVersion = { sha256: "saved", size: 9, mtimeMs: 5 };
+    let diskContent = "SELECT 1;";
+    const saveCalls = [];
+    const session = stubSession({
+        conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } },
+        sqlNamespace: { databaseDir: "/tmp/sql", fingerprint: "fingerprint", databaseKey: "fingerprint" },
+        sqlFiles: [{ name: "saved.sql", path: "/tmp/sql/saved.sql", size: 9, mtimeMs: 4, reserved: false }],
+        consoleState: { phase: "ready", files: [], error: null },
+    });
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({
+        sqlFiles: {
+            async readSqlFile() {
+                return { content: diskContent, version: diskContent === "SELECT 1;" ? version : savedVersion };
+            },
+            async saveSqlFile(namespace, name, content, expected) {
+                saveCalls.push({ namespace, name, content, expected });
+                diskContent = content;
+                return firstSave.promise;
+            },
+        },
+    }));
+
+    const opened = await coordinator.openSqlFile("saved.sql");
+    const entry = session.sqlRegistry.byId[opened.sqlTabId];
+    const state = session.sqlState.get(entry.key);
+    assert.deepEqual(coordinator.updateSqlDraft(opened.sqlTabId, "SELECT 2;"), { sqlTabId: opened.sqlTabId, dirty: true });
+    assert.equal(state.sql, "SELECT 2;");
+    assert.equal(session.sqlRegistry.byId[opened.sqlTabId].dirty, true);
+
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    assert.equal(saveCalls.length, 1);
+    assert.equal(saveCalls[0].content, "SELECT 2;");
+
+    coordinator.updateSqlDraft(opened.sqlTabId, "SELECT 3;");
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    assert.equal(saveCalls.length, 1);
+    assert.equal(state.sql, "SELECT 3;");
+
+    firstSave.resolve({ version: savedVersion });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(saveCalls.length, 2);
+    assert.equal(saveCalls[1].content, "SELECT 3;");
+    assert.deepEqual(saveCalls[1].expected, savedVersion);
+    assert.equal(state.dirty, false);
+    assert.equal(session.sqlRegistry.byId[opened.sqlTabId].dirty, false);
+
+    coordinator.closeSql(opened.sqlTabId);
+    const reopened = await coordinator.openSqlFile("saved.sql");
+    assert.equal(session.sqlState.get(session.sqlRegistry.byId[reopened.sqlTabId].key).sql, "SELECT 3;");
+});
+
+test("failed SQL autosave keeps the draft dirty and visible", async () => {
+    const version = { sha256: "hash", size: 9, mtimeMs: 4 };
+    const session = stubSession({
+        conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } },
+        sqlNamespace: { databaseDir: "/tmp/sql", fingerprint: "fingerprint", databaseKey: "fingerprint" },
+        sqlFiles: [{ name: "saved.sql", path: "/tmp/sql/saved.sql", size: 9, mtimeMs: 4, reserved: false }],
+        consoleState: { phase: "ready", files: [], error: null },
+    });
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({
+        sqlFiles: {
+            async readSqlFile() {
+                return { content: "SELECT 1;", version };
+            },
+            async saveSqlFile() {
+                throw new Error("write failed");
+            },
+        },
+    }));
+
+    const opened = await coordinator.openSqlFile("saved.sql");
+    const state = session.sqlState.get(session.sqlRegistry.byId[opened.sqlTabId].key);
+    coordinator.updateSqlDraft(opened.sqlTabId, "SELECT unsaved;");
+
+    await new Promise((resolve) => setTimeout(resolve, 550));
+
+    assert.equal(state.sql, "SELECT unsaved;");
+    assert.equal(state.dirty, true);
+    assert.match(state.saveError.message, /write failed/);
+    assert.equal(session.sqlRegistry.byId[opened.sqlTabId].dirty, true);
+});
+
 test("renaming an SQL tab updates file and tab metadata while preserving runtime state", async () => {
     const version = { sha256: "hash", size: 9, mtimeMs: 4 };
     const session = stubSession({

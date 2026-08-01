@@ -115,6 +115,17 @@ test("projectWorkspaceTabs renders SQL tabs with code icons and no dirty state",
     }]);
 });
 
+test("projectWorkspaceTabs reflects SQL draft dirty state from the SQL tab entry", () => {
+    const tabs = projectWorkspaceTabs({
+        order: [4],
+        activeId: 4,
+        byId: { 4: { id: 4, key: "sql:4", kind: "sql", name: "New Query", title: "New Query", dirty: true } },
+        changesByKey: null,
+    });
+
+    assert.equal(tabs[0].dirty, true);
+});
+
 test("closeWorkspaceTabIntent stops propagation before closing and never activates", () => {
     const calls = [];
     let propagationStopped = false;

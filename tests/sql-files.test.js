@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import test from "node:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,7 +16,7 @@ globalThis.muxy = {
     },
 };
 
-const { createSqlFile, ensureConsoleFile, getSqlNamespace, listSqlFiles, readSqlFile, renameSqlFile, trashSqlFile, validateFileName, filePath } = await import("../src/lib/sql-files.js");
+const { createSqlFile, ensureConsoleFile, getSqlNamespace, listSqlFiles, readSqlFile, renameSqlFile, saveSqlFile, trashSqlFile, validateFileName, filePath } = await import("../src/lib/sql-files.js");
 
 test("network SQL namespace uses the connection identity and database key", async () => {
     calls.length = 0;
@@ -157,6 +157,116 @@ test("createSqlFile is create-only and readSqlFile returns content with its obse
         await assert.rejects(createSqlFile(namespace, "DRAFT.sql"), { code: "FILE_EXISTS" });
         await writeFile(join(databaseDir, "e\u0301.sql"), "");
         await assert.rejects(createSqlFile(namespace, "é"), { code: "FILE_EXISTS" });
+    }
+    finally {
+        execHandler = async () => ({ exitCode: 0, stdout: "/Users/test-user\n", stderr: "" });
+        await rm(base, { recursive: true, force: true });
+    }
+});
+
+test("saveSqlFile atomically replaces content, preserves private mode, and returns its new version", async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "muxy-sql-files-")));
+    const rootDir = join(base, "root");
+    const fingerprint = "fingerprint";
+    const databaseKey = "db-key";
+    const databaseDir = join(rootDir, fingerprint, databaseKey);
+    const namespace = { rootDir, fingerprint, databaseKey, databaseDir };
+    execHandler = (argv) => new Promise((resolve, reject) => {
+        const child = spawn(argv[0], argv.slice(1));
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (chunk) => stdout += chunk);
+        child.stderr.on("data", (chunk) => stderr += chunk);
+        child.on("error", reject);
+        child.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+    });
+
+    try {
+        await ensureConsoleFile(namespace);
+        const file = await createSqlFile(namespace, "draft");
+        await writeFile(file.path, "SELECT 1;");
+        const observed = await readSqlFile(namespace, file.name);
+        await chmod(file.path, 0o644);
+
+        const saved = await saveSqlFile(namespace, file.name, "SELECT 2;\n😀", observed.version);
+
+        assert.equal(await readFile(file.path, "utf8"), "SELECT 2;\n😀");
+        assert.equal((await stat(file.path)).mode & 0o777, 0o600);
+        assert.deepEqual(saved.version, {
+            sha256: createHash("sha256").update("SELECT 2;\n😀").digest("hex"),
+            size: Buffer.byteLength("SELECT 2;\n😀"),
+            mtimeMs: saved.version.mtimeMs,
+        });
+    }
+    finally {
+        execHandler = async () => ({ exitCode: 0, stdout: "/Users/test-user\n", stderr: "" });
+        await rm(base, { recursive: true, force: true });
+    }
+});
+
+test("saveSqlFile rejects an unexpected on-disk hash without replacing bytes", async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "muxy-sql-files-")));
+    const rootDir = join(base, "root");
+    const fingerprint = "fingerprint";
+    const databaseKey = "db-key";
+    const databaseDir = join(rootDir, fingerprint, databaseKey);
+    const namespace = { rootDir, fingerprint, databaseKey, databaseDir };
+    execHandler = (argv) => new Promise((resolve, reject) => {
+        const child = spawn(argv[0], argv.slice(1));
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (chunk) => stdout += chunk);
+        child.stderr.on("data", (chunk) => stderr += chunk);
+        child.on("error", reject);
+        child.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+    });
+
+    try {
+        await ensureConsoleFile(namespace);
+        const file = await createSqlFile(namespace, "draft");
+        await writeFile(file.path, "SELECT 1;");
+        const observed = await readSqlFile(namespace, file.name);
+        await writeFile(file.path, "SELECT outside;");
+
+        await assert.rejects(saveSqlFile(namespace, file.name, "SELECT inside;", observed.version), { code: "FILE_VERSION_CONFLICT" });
+        assert.equal(await readFile(file.path, "utf8"), "SELECT outside;");
+    }
+    finally {
+        execHandler = async () => ({ exitCode: 0, stdout: "/Users/test-user\n", stderr: "" });
+        await rm(base, { recursive: true, force: true });
+    }
+});
+
+test("saveSqlFile sends large UTF-8 content in bounded argv chunks", async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "muxy-sql-files-")));
+    const rootDir = join(base, "root");
+    const fingerprint = "fingerprint";
+    const databaseKey = "db-key";
+    const databaseDir = join(rootDir, fingerprint, databaseKey);
+    const namespace = { rootDir, fingerprint, databaseKey, databaseDir };
+    execHandler = (argv) => new Promise((resolve, reject) => {
+        const child = spawn(argv[0], argv.slice(1));
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (chunk) => stdout += chunk);
+        child.stderr.on("data", (chunk) => stderr += chunk);
+        child.on("error", reject);
+        child.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+    });
+
+    try {
+        await ensureConsoleFile(namespace);
+        const file = await createSqlFile(namespace, "draft");
+        const observed = await readSqlFile(namespace, file.name);
+        const content = "😀".repeat(120000);
+        await saveSqlFile(namespace, file.name, content, observed.version);
+        const saveArgs = calls.at(-1);
+        const chunks = saveArgs.slice(10);
+
+        assert.ok(chunks.length > 1);
+        assert.ok(chunks.every((chunk) => Buffer.byteLength(chunk) <= 96 * 1024));
+        assert.equal(chunks.join(""), content);
+        assert.equal(await readFile(file.path, "utf8"), content);
     }
     finally {
         execHandler = async () => ({ exitCode: 0, stdout: "/Users/test-user\n", stderr: "" });

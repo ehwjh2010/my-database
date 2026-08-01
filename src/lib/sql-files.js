@@ -162,6 +162,82 @@ my $content;
 eval { $content = decode("UTF-8", $bytes // "", FB_CROAK); 1 } or fail("FILE_READ_FAILED", $path . ": invalid UTF-8");
 print encode_json({ content => $content, version => { sha256 => $sha256, size => $size, mtimeMs => 0 + ($st[9] * 1000) } });
 `;
+const SAVE_SCRIPT = String.raw`
+use Cwd qw(realpath);
+use Digest::SHA qw(sha256_hex);
+use Encode qw(decode encode);
+use Fcntl qw(:mode O_WRONLY O_CREAT O_EXCL);
+use JSON::PP qw(encode_json);
+umask 077;
+sub fail { die $_[0] . ": " . $_[1] . "\n"; }
+sub check_dir {
+    my ($path) = @_;
+    my @st = lstat($path) or fail("FILE_PERMISSION_FAILED", $path . ": " . $!);
+    fail("FILE_UNSAFE_TYPE", $path . " is a symlink") if S_ISLNK($st[2]);
+    fail("FILE_UNSAFE_TYPE", $path . " is not a directory") unless S_ISDIR($st[2]);
+    fail("FILE_PERMISSION_FAILED", $path . " owner mismatch") if $st[4] != $<;
+    chmod(0700, $path) or fail("FILE_PERMISSION_FAILED", $path . ": " . $!);
+}
+sub current_version {
+    my ($path) = @_;
+    my @st = lstat($path) or fail("FILE_NOT_FOUND", $path . ": " . $!);
+    fail("FILE_UNSAFE_TYPE", $path . " is a symlink") if S_ISLNK($st[2]);
+    fail("FILE_UNSAFE_TYPE", $path . " is not a regular file") unless S_ISREG($st[2]);
+    fail("FILE_PERMISSION_FAILED", $path . " owner mismatch") if $st[4] != $<;
+    chmod(0600, $path) or fail("FILE_PERMISSION_FAILED", $path . ": " . $!);
+    open(my $fh, "<:raw", $path) or fail("FILE_READ_FAILED", $path . ": " . $!);
+    local $/;
+    my $bytes = <$fh> // "";
+    close($fh) or fail("FILE_READ_FAILED", $path . ": " . $!);
+    return { sha256 => sha256_hex($bytes), size => 0 + length($bytes), mtimeMs => 0 + ($st[9] * 1000) };
+}
+my ($rootDir, $fingerprintDir, $databaseDir, $path, $expectedSha, @chunks) = @ARGV;
+check_dir($rootDir);
+check_dir($fingerprintDir);
+check_dir($databaseDir);
+my $real = realpath($databaseDir);
+fail("FILE_UNSAFE_TYPE", $databaseDir . " is outside its real path") unless defined($real) && $real eq $databaseDir;
+my $current = current_version($path);
+fail("FILE_VERSION_CONFLICT", $path) unless $current->{sha256} eq $expectedSha;
+my $temp = $path . ".muxy-save-" . $$ . "-" . int(rand(1000000));
+my ($error, $version);
+eval {
+    my $fh;
+    sysopen($fh, $temp, O_WRONLY | O_CREAT | O_EXCL, 0600) or fail("FILE_WRITE_FAILED", $temp . ": " . $!);
+    for my $chunk (@chunks) {
+        my $bytes = encode("UTF-8", decode("UTF-8", $chunk));
+        my $offset = 0;
+        while ($offset < length($bytes)) {
+            my $written = syswrite($fh, $bytes, length($bytes) - $offset, $offset);
+            fail("FILE_WRITE_FAILED", $temp . ": " . $!) unless defined($written) && $written > 0;
+            $offset += $written;
+        }
+    }
+    close($fh) or fail("FILE_WRITE_FAILED", $temp . ": " . $!);
+    chmod(0600, $temp) or fail("FILE_PERMISSION_FAILED", $temp . ": " . $!);
+    my @st = lstat($temp) or fail("FILE_VERIFY_FAILED", $temp . ": " . $!);
+    fail("FILE_UNSAFE_TYPE", $temp . " is not a regular file") unless S_ISREG($st[2]);
+    fail("FILE_PERMISSION_FAILED", $temp . " mode is not 0600") unless ($st[2] & 07777) == 0600;
+    open(my $verify, "<:raw", $temp) or fail("FILE_VERIFY_FAILED", $temp . ": " . $!);
+    local $/;
+    my $bytes = <$verify> // "";
+    close($verify) or fail("FILE_VERIFY_FAILED", $temp . ": " . $!);
+    my $sha256 = sha256_hex($bytes);
+    fail("FILE_VERIFY_FAILED", $temp) unless $sha256 eq sha256_hex(join("", map { encode("UTF-8", decode("UTF-8", $_)) } @chunks));
+    my $beforeCommit = current_version($path);
+    fail("FILE_VERSION_CONFLICT", $path) unless $beforeCommit->{sha256} eq $expectedSha;
+    rename($temp, $path) or fail("FILE_COMMIT_FAILED", $path . ": " . $!);
+    my @committed = lstat($path) or fail("FILE_COMMIT_FAILED", $path . ": " . $!);
+    fail("FILE_UNSAFE_TYPE", $path . " is not a regular file") unless S_ISREG($committed[2]);
+    $version = { sha256 => $sha256, size => 0 + length($bytes), mtimeMs => 0 + ($committed[9] * 1000) };
+    1;
+} or $error = $@;
+if ($error) {
+    unlink($temp) if -e $temp;
+    die $error;
+}
+print encode_json({ version => $version });
+`;
 const LIST_SCRIPT = String.raw`
 use Cwd qw(realpath);
 use Encode qw(decode);
@@ -334,6 +410,27 @@ function parseJson(output, fallbackCode) {
     }
 }
 
+const SAVE_CHUNK_BYTES = 96 * 1024;
+const textEncoder = new TextEncoder();
+
+function contentChunks(content) {
+    const chunks = [];
+    let chunk = "";
+    let size = 0;
+    for (const character of content) {
+        const characterSize = textEncoder.encode(character).byteLength;
+        if (chunk && size + characterSize > SAVE_CHUNK_BYTES) {
+            chunks.push(chunk);
+            chunk = "";
+            size = 0;
+        }
+        chunk += character;
+        size += characterSize;
+    }
+    chunks.push(chunk);
+    return chunks;
+}
+
 async function sha256(value) {
     const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
     return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -460,6 +557,29 @@ export async function readSqlFile(namespace, input) {
     const path = filePath(namespace, name);
     const output = await execute(["perl", "-MDigest::SHA=sha256_hex", "-MJSON::PP=encode_json", "-e", READ_SCRIPT, path], "FILE_READ_FAILED");
     return parseJson(output, "FILE_READ_FAILED");
+}
+
+export async function saveSqlFile(namespace, input, content, expectedVersion) {
+    const { rootDir, fingerprintDir, databaseDir } = namespacePaths(namespace);
+    const name = validateFileName(input, { allowReserved: true });
+    if (typeof content !== "string")
+        throw new SqlFileError("FILE_WRITE_FAILED", "content must be text");
+    if (!expectedVersion || typeof expectedVersion.sha256 !== "string")
+        throw new SqlFileError("FILE_VERSION_REQUIRED");
+    const output = await execute([
+        "perl",
+        "-MDigest::SHA=sha256_hex",
+        "-MJSON::PP=encode_json",
+        "-e",
+        SAVE_SCRIPT,
+        rootDir,
+        fingerprintDir,
+        databaseDir,
+        filePath(namespace, name),
+        expectedVersion.sha256,
+        ...contentChunks(content),
+    ], "FILE_WRITE_FAILED");
+    return parseJson(output, "FILE_WRITE_FAILED");
 }
 
 export async function listSqlFiles(namespace) {

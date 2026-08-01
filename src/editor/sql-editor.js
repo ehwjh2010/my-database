@@ -15,7 +15,7 @@ const completionSpacing = EditorState.transactionFilter.of((transaction) => {
     return [transaction, { changes: hasSpace ? undefined : { from: cursor, insert: " " }, selection: { anchor: cursor + 1 }, sequential: true }];
 });
 
-export function createSqlEditor(parent, { engine, doc = "", schema = {}, onRun, onRunAll, onDocChange }) {
+export function createSqlEditor(parent, { engine, doc = "", schema = {}, onRun, onDocChange }) {
     const view = new EditorView({
         parent,
         state: EditorState.create({
@@ -32,7 +32,6 @@ export function createSqlEditor(parent, { engine, doc = "", schema = {}, onRun, 
                 completionSpacing,
                 keymap.of([
                     { key: "Mod-Enter", run: () => (onRun ? (onRun(), true) : false) },
-                    { key: "Shift-Mod-Enter", run: () => (onRunAll ? (onRunAll(), true) : false) },
                     ...closeBracketsKeymap,
                     ...defaultKeymap,
                     ...historyKeymap,
