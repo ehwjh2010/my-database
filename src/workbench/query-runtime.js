@@ -1,6 +1,13 @@
 import { objectCacheKey, sameObjectRef } from "./workspace-state.js";
 
 export function isCurrentQueryRequest(session, request) {
+    if (request?.sqlTabId != null) {
+        const entry = session.sqlRegistry?.byId?.[request.sqlTabId];
+        return Boolean(entry
+            && entry.key === request.sqlKey
+            && session.sqlOwners?.get(entry.key)?.queryRequest === request.queryToken
+            && session.surface === "console");
+    }
     const ownership = request?.ownership;
     if (!ownership || !session.registry)
         return false;
@@ -15,7 +22,7 @@ export function isCurrentQueryRequest(session, request) {
 export function commitQueryResult(session, request, data) {
     if (!isCurrentQueryRequest(session, request))
         return false;
-    const state = session.queryState?.get(objectCacheKey(request.objectRef));
+    const state = request.sqlKey ? session.sqlState?.get(request.sqlKey) : session.queryState?.get(objectCacheKey(request.objectRef));
     if (!state)
         return false;
     const result = { results: data };
@@ -28,7 +35,7 @@ export function commitQueryResult(session, request, data) {
 export function commitQueryError(session, request, message) {
     if (!isCurrentQueryRequest(session, request))
         return false;
-    const state = session.queryState?.get(objectCacheKey(request.objectRef));
+    const state = request.sqlKey ? session.sqlState?.get(request.sqlKey) : session.queryState?.get(objectCacheKey(request.objectRef));
     if (!state)
         return false;
     const result = { error: message };

@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { hasDatabase } from "./state.js";
 
 const SessionContext = createContext(null);
 
@@ -41,6 +42,8 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, children }
     const activeKey = activeWorkspace?.key || null;
     const activeMode = activeWorkspace?.view || null;
     const activeRef = activeWorkspace?.ref || null;
+    const activeSqlId = session.sqlRegistry?.activeId || null;
+    const surface = session.surface || (activeWorkspace ? "object" : "console");
 
     const refreshSchema = useCallback(async () => {
         await coordinator.initiateCatalogLoad();
@@ -48,6 +51,10 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, children }
     }, [coordinator]);
 
     const openWorkspace = useCallback((next) => coordinator.openOrActivate(next), [coordinator]);
+    const enterConsole = useCallback(() => coordinator.enterConsole(), [coordinator]);
+    const newQuery = useCallback(() => coordinator.newQuery(), [coordinator]);
+    const activateSql = useCallback((sqlTabId) => coordinator.activateSql(sqlTabId), [coordinator]);
+    const closeSql = useCallback((sqlTabId) => coordinator.closeSql(sqlTabId), [coordinator]);
     const loadTableInfo = useCallback((ref) => coordinator.loadTableInfo(ref), [coordinator]);
     const focusTableColumn = useCallback((ref, columnName) => coordinator.focusTableColumn(ref, columnName), [coordinator]);
     const consumeColumnFocus = useCallback((token) => coordinator.consumeColumnFocus(token), [coordinator]);
@@ -62,8 +69,11 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, children }
     }, [coordinator, activeId]);
     const changeScope = useCallback((scope) => coordinator.changeScope(scope), [coordinator]);
     const changeView = useCallback((next) => {
+        if (next === "console")
+            return coordinator.enterConsole();
         if (activeId)
-            coordinator.changeView(activeId, next);
+            return coordinator.changeView(activeId, next);
+        return { error: "OBJECT_WORKSPACE_REQUIRED" };
     }, [coordinator, activeId]);
     const selectTable = useCallback((next) => openWorkspace(next), [openWorkspace]);
 
@@ -84,12 +94,18 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, children }
             activeKey,
             activeMode,
             activeRef,
+            activeSqlId,
+            surface,
             registryRevision,
             pendingRevision,
             notifyPendingChanges,
             dataRevision,
             queryRunRef,
             openWorkspace,
+            enterConsole,
+            newQuery,
+            activateSql,
+            closeSql,
             loadTableInfo,
             focusTableColumn,
             columnFocus,
@@ -98,7 +114,8 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, children }
             closeWorkspace,
             refreshData,
             setWorkspaceMode,
-            view: activeMode,
+            view: surface === "console" ? "console" : activeMode,
+            hasDatabase: hasDatabase(session),
             setView: changeView,
             ref: activeRef,
             selectTable,
@@ -112,7 +129,7 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, children }
             schemaEpoch,
             queryHooksRef,
         }),
-        [session, coordinator, order, activeId, byId, activeKey, activeMode, activeRef, registryRevision, pendingRevision, dataRevision, notifyPendingChanges, changeView, selectTable, openWorkspace, loadTableInfo, focusTableColumn, columnFocus, consumeColumnFocus, activateWorkspace, closeWorkspace, refreshData, setWorkspaceMode, tables, columnsMap, catalogError, status, refreshSchema, changeScope, schemaEpoch, queryHooksRef],
+        [session, coordinator, order, activeId, byId, activeKey, activeMode, activeRef, activeSqlId, surface, registryRevision, pendingRevision, dataRevision, notifyPendingChanges, changeView, selectTable, openWorkspace, enterConsole, newQuery, activateSql, closeSql, loadTableInfo, focusTableColumn, columnFocus, consumeColumnFocus, activateWorkspace, closeWorkspace, refreshData, setWorkspaceMode, tables, columnsMap, catalogError, status, refreshSchema, changeScope, schemaEpoch, queryHooksRef],
     );
 
     return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

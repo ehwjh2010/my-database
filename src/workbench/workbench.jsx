@@ -8,6 +8,7 @@ import { closeTunnel } from "../lib/tunnel.js";
 import { clearCredFiles } from "../lib/cred-file.js";
 import { DataView } from "../grid/data-view.jsx";
 import { QueryView } from "../editor/query-view.jsx";
+import { ConsoleView } from "../editor/console-view.jsx";
 import { StructureView } from "../structure/structure-view.jsx";
 import { TableDesignerModal } from "../structure/table-designer.jsx";
 import { TransferMenuModal } from "../transfer/transfer-menu.jsx";
@@ -15,9 +16,15 @@ import { WorkspaceTabs } from "./workspace-tabs.jsx";
 import { objectCacheKey } from "./workspace-state.js";
 
 export function Workbench() {
-    const { session, view, ref, order, activeId, byId, activateWorkspace, closeWorkspace, setStatus, refreshSchema, schemaEpoch, queryHooksRef } = useSession();
+    const { session, view, surface, ref, order, activeId, byId, activeSqlId, activateWorkspace, closeWorkspace, activateSql, closeSql, newQuery, enterConsole, setStatus, refreshSchema, schemaEpoch, queryHooksRef, hasDatabase } = useSession();
     const [designerOpen, setDesignerOpen] = useState(false);
     const [transferOpen, setTransferOpen] = useState(false);
+    const consolePhase = session.consoleState?.phase;
+
+    useEffect(() => {
+        if (hasDatabase && consolePhase === "missing")
+            enterConsole().catch(() => undefined);
+    }, [consolePhase, enterConsole, hasDatabase]);
 
     useEffect(() => {
         const conn = session.conn;
@@ -31,6 +38,12 @@ export function Workbench() {
     }, [session]);
 
     const main = () => {
+        if (surface === "console") {
+            const sqlEntry = session.sqlRegistry.byId[activeSqlId];
+            if (!sqlEntry)
+                return <ConsoleView state={session.consoleState} hasDatabase={hasDatabase} hasQueryTab={false} onNewQuery={newQuery} onRetry={() => enterConsole().catch(() => undefined)} />;
+            return <QueryView key={`sql:${activeSqlId}`} session={session} sqlTabId={activeSqlId} setStatus={setStatus} queryHooksRef={queryHooksRef} />;
+        }
         if (view === "query")
             return <QueryView key={activeId} session={session} workspaceId={activeId} setStatus={setStatus} queryHooksRef={queryHooksRef} />;
         if (!ref)
@@ -46,7 +59,14 @@ export function Workbench() {
             <div className="flex min-h-0 flex-1">
                 <Sidebar onNewTable={() => setDesignerOpen(true)} onTransfer={() => setTransferOpen(true)} />
                 <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                    <WorkspaceTabs order={order} activeId={activeId} byId={byId} changesByKey={session.changes} onActivate={activateWorkspace} onClose={closeWorkspace} />
+                    <WorkspaceTabs
+                        order={surface === "console" ? session.sqlRegistry.order : order}
+                        activeId={surface === "console" ? activeSqlId : activeId}
+                        byId={surface === "console" ? session.sqlRegistry.byId : byId}
+                        changesByKey={surface === "console" ? null : session.changes}
+                        onActivate={surface === "console" ? activateSql : activateWorkspace}
+                        onClose={surface === "console" ? closeSql : closeWorkspace}
+                    />
                     <div className="flex min-h-0 min-w-0 flex-1 flex-col">{main()}</div>
                 </div>
             </div>

@@ -18,20 +18,21 @@ export function schemaForCompletion(session) {
     return schema;
 }
 
-export function QueryView({ session, workspaceId, setStatus, queryHooksRef }) {
+export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHooksRef }) {
     const editorRef = useRef(null);
     const [panel, setPanel] = useState(null);
     const [running, setRunning] = useState(false);
     const [historyToken, setHistoryToken] = useState(0);
 
-    // Derive workspace state synchronously from session.queryState
-    const entry = session.registry.byId[workspaceId];
+    const isSqlTab = sqlTabId != null;
+    const tabId = isSqlTab ? sqlTabId : workspaceId;
+    const entry = isSqlTab ? session.sqlRegistry?.byId?.[sqlTabId] : session.registry.byId[workspaceId];
     const key = entry?.key;
-    const qs = key ? (session.queryState.get(key) || { sql: "", results: null, exportContext: null }) : { sql: "", results: null, exportContext: null };
+    const stateMap = isSqlTab ? session.sqlState : session.queryState;
+    const qs = key ? (stateMap.get(key) || { sql: "", results: null, exportContext: null }) : { sql: "", results: null, exportContext: null };
     const [draft, setDraft] = useState(() => qs.sql);
     const [results, setResults] = useState(() => qs.results);
 
-    // Sync local state when workspace changes (remount due to key={workspaceId})
     useEffect(() => {
         setDraft(qs.sql);
         setResults(qs.results);
@@ -39,6 +40,10 @@ export function QueryView({ session, workspaceId, setStatus, queryHooksRef }) {
 
     if (!entry || !key)
         return null;
+
+    const active = isSqlTab
+        ? session.surface === "console" && session.sqlRegistry.activeId === sqlTabId
+        : session.surface === "object" && session.registry.activeId === workspaceId;
 
     const currentStatement = () => {
         if (!editorRef.current) return "";
@@ -50,15 +55,15 @@ export function QueryView({ session, workspaceId, setStatus, queryHooksRef }) {
     };
 
     const setDraftText = useCallback((sql) => {
-        const store = session.queryState.get(key);
+        const store = stateMap.get(key);
         if (store) store.sql = sql;
         setDraft(sql);
-    }, [key, session]);
+    }, [key, stateMap]);
 
     const execute = useCallback(
         async (sql, mode) => {
             const isExplain = mode === "explain";
-            const snapshot = session.coordinator.initiateQueryExecute(workspaceId, sql, mode);
+            const snapshot = session.coordinator.initiateQueryExecute(tabId, sql, mode);
             if (snapshot.error) {
                 setStatus("Error");
                 return;
@@ -75,8 +80,8 @@ export function QueryView({ session, workspaceId, setStatus, queryHooksRef }) {
             } catch (error) {
                 if (!commitQueryError(session, snapshot, error.message))
                     return;
-                if (session.registry.activeId === workspaceId) {
-                    setResults(session.queryState.get(key).results);
+                if (active) {
+                    setResults(stateMap.get(key).results);
                     setStatus("Error");
                 }
                 if (!isExplain && isCurrentQueryRequest(session, snapshot))
@@ -87,20 +92,20 @@ export function QueryView({ session, workspaceId, setStatus, queryHooksRef }) {
                 return;
             const rows = data.reduce((sum, r) => sum + r.rows.length, 0);
             const duration = data.reduce((sum, r) => sum + (r.durationMs || 0), 0);
-            if (session.registry.activeId === workspaceId) {
-                setResults(session.queryState.get(key).results);
+            if (active) {
+                setResults(stateMap.get(key).results);
                 setStatus(`Done \u00b7 ${rows} rows \u00b7 ${duration}ms`);
             }
             if (!isExplain && isCurrentQueryRequest(session, snapshot))
                 await appendHistory(session.conn.id, { id: String(started), sql: snapshot.sql.slice(0, 4096), startedAt: started, durationMs: duration, ok: true, rows });
             } finally {
-                if (isCurrentQueryRequest(session, snapshot) && session.registry.activeId === workspaceId) {
+                if (isCurrentQueryRequest(session, snapshot) && active) {
                     setRunning(false);
                     setHistoryToken((n) => n + 1);
                 }
             }
         },
-        [key, session, setStatus, workspaceId],
+        [active, key, session, setStatus, stateMap, tabId],
     );
 
     const run = useCallback(
@@ -124,14 +129,13 @@ export function QueryView({ session, workspaceId, setStatus, queryHooksRef }) {
         await execute(sql, "explain");
     };
 
-    // Expose run command to parent via queryHooksRef
     useEffect(() => {
         queryHooksRef.current = { run: () => runRef.current("cursor") };
         return () => { queryHooksRef.current = null; };
     }, [queryHooksRef]);
 
     const exportResults = async () => {
-        const context = session.queryState.get(key)?.exportContext;
+        const context = stateMap.get(key)?.exportContext;
         if (!context?.result) {
             toast("No result rows to export", "warning");
             return;

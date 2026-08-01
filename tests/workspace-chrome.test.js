@@ -74,6 +74,27 @@ test("workspaceSwitchMenuItems is empty when no workspace is open", () => {
     assert.deepEqual(workspaceSwitchMenuItems({ order: [], byId: {}, onActivate: () => {} }), []);
 });
 
+test("projectWorkspaceTabs renders SQL tabs with code icons and no dirty state", () => {
+    const tabs = projectWorkspaceTabs({
+        order: [4],
+        activeId: 4,
+        byId: { 4: { id: 4, key: "sql:4", kind: "sql", name: "New Query", title: "New Query" } },
+        changesByKey: null,
+    });
+
+    assert.deepEqual(tabs, [{
+        id: 4,
+        key: "sql:4",
+        name: "New Query",
+        title: "New Query",
+        icon: "code",
+        active: true,
+        dirty: false,
+        dirtyLabel: "Unsaved changes",
+        closeLabel: "Close New Query",
+    }]);
+});
+
 test("closeWorkspaceTabIntent stops propagation before closing and never activates", () => {
     const calls = [];
     let propagationStopped = false;

@@ -1,6 +1,7 @@
 import { clearChanges } from "../grid/pending-changes.js";
-import { qualifiedName } from "../lib/sql/quote.js";
+import { ensureConsoleFile, getSqlNamespace, listSqlFiles } from "../lib/sql-files.js";
 import { clearDataRuntime, clearDataRuntimes, dataRuntimeFor, nextDataRequest, refreshDataRuntime } from "./data-runtime.js";
+import { currentDatabase, hasDatabase } from "./state.js";
 import { initialWorkspaceState, objectCacheKey, pendingChangeCountFor, sameObjectRef, workspaceReducer } from "./workspace-state.js";
 
 export const WORKSPACE_VIEWS = Object.freeze(["data", "structure", "query"]);
@@ -21,6 +22,13 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
     session.tableInfoErrors = session.tableInfoErrors || new Map();
     session.columnFocusToken = session.columnFocusToken || 0;
     session.columnFocus = session.columnFocus || null;
+    session.sqlRegistry = session.sqlRegistry || { order: [], activeId: null, byId: {} };
+    session.sqlState = session.sqlState || new Map();
+    session.sqlOwners = session.sqlOwners || new Map();
+    session.sqlTabIdCounter = session.sqlTabIdCounter || 0;
+    session.consoleToken = session.consoleToken || 0;
+    session.consoleState = session.consoleState || { phase: "missing", files: [], error: null };
+    session.surface = session.surface || "console";
     let registryRevision = 0;
 
     const emit = () => {
@@ -40,6 +48,11 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         session.structureCache?.delete(key);
         session.queryState?.delete(key);
     };
+    const clearSqlRuntime = () => {
+        session.sqlState.clear();
+        session.sqlOwners.clear();
+        session.sqlRegistry = { order: [], activeId: null, byId: {} };
+    };
     const clearWindowRuntime = () => {
         clearDataRuntimes(session);
         session.structureCache?.clear();
@@ -47,6 +60,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         session.tableInfoRequests.clear();
         session.tableInfoErrors.clear();
         session.queryState?.clear();
+        clearSqlRuntime();
         session.columnFocus = null;
         commit({ type: "CLEAR_ALL" });
         adapters.notifyPending?.();
@@ -57,6 +71,9 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         session.tables = [];
         session.columnsMap = {};
         session.catalogError = null;
+        session.surface = "console";
+        session.consoleState = { phase: "missing", files: [], error: null };
+        clearSqlRuntime();
         clearWindowRuntime();
         adapters.notifyScope?.();
         adapters.notifyCatalog?.();
@@ -72,6 +89,11 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         adapters.notifyData?.();
         return { outcome: "closed", activeId: session.registry.activeId };
     };
+    const sqlEntryById = (sqlTabId) => session.sqlRegistry.byId[sqlTabId] || null;
+    const sqlStateFor = (sqlTabId) => {
+        const entry = sqlEntryById(sqlTabId);
+        return entry ? session.sqlState.get(entry.key) : null;
+    };
 
     const coordinator = {
         adapters,
@@ -82,6 +104,89 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
 
         getActive() {
             return entryById(session.registry.activeId);
+        },
+
+        getActiveSql() {
+            return sqlEntryById(session.sqlRegistry.activeId);
+        },
+
+        enterConsole() {
+            session.surface = "console";
+            const token = ++session.consoleToken;
+            if (!hasDatabase(session)) {
+                session.consoleState = { phase: "missing", files: [], error: null };
+                emit();
+                return Promise.resolve({ error: "DATABASE_REQUIRED" });
+            }
+            session.consoleState = { phase: "loading", files: session.consoleState.files || [], error: null };
+            emit();
+            const filesApi = adapters.sqlFiles || { getNamespace: getSqlNamespace, ensureConsoleFile, listSqlFiles };
+            return (async () => {
+                try {
+                    const namespace = await filesApi.getNamespace({ conn: session.conn, database: currentDatabase(session) });
+                    await filesApi.ensureConsoleFile(namespace);
+                    const files = await filesApi.listSqlFiles(namespace);
+                    if (session.consoleToken !== token)
+                        return { stale: true };
+                    session.sqlNamespace = namespace;
+                    session.sqlFiles = files;
+                    session.consoleState = { phase: "ready", files, error: null };
+                    emit();
+                    return { namespace, files };
+                }
+                catch (error) {
+                    if (session.consoleToken === token) {
+                        session.consoleState = { phase: "error", files: session.consoleState.files || [], error };
+                        emit();
+                    }
+                    throw error;
+                }
+            })();
+        },
+
+        retryConsole() {
+            return coordinator.enterConsole();
+        },
+
+        newQuery() {
+            if (!hasDatabase(session))
+                return { error: "DATABASE_REQUIRED" };
+            const id = ++session.sqlTabIdCounter;
+            const key = `sql:${id}`;
+            session.sqlState.set(key, { sql: "", results: null, exportContext: null });
+            session.sqlOwners.set(key, { queryRequest: 0 });
+            session.sqlRegistry = {
+                order: [...session.sqlRegistry.order, id],
+                activeId: id,
+                byId: { ...session.sqlRegistry.byId, [id]: { id, key, name: "New Query", title: "New Query", kind: "sql" } },
+            };
+            session.surface = "console";
+            emit();
+            return { sqlTabId: id, created: true, activeId: id };
+        },
+
+        activateSql(sqlTabId) {
+            if (!sqlEntryById(sqlTabId))
+                return { error: "QUERY_TAB_REQUIRED" };
+            session.sqlRegistry = { ...session.sqlRegistry, activeId: sqlTabId };
+            session.surface = "console";
+            emit();
+            return { activeId: sqlTabId };
+        },
+
+        closeSql(sqlTabId) {
+            const entry = sqlEntryById(sqlTabId);
+            if (!entry)
+                return { error: "QUERY_TAB_REQUIRED" };
+            const index = session.sqlRegistry.order.indexOf(sqlTabId);
+            const order = session.sqlRegistry.order.filter((id) => id !== sqlTabId);
+            const nextActive = session.sqlRegistry.activeId === sqlTabId ? order[Math.max(0, index - 1)] || order[0] || null : session.sqlRegistry.activeId;
+            const { [sqlTabId]: _, ...byId } = session.sqlRegistry.byId;
+            session.sqlRegistry = { order, activeId: nextActive, byId };
+            session.sqlState.delete(entry.key);
+            session.sqlOwners.delete(entry.key);
+            emit();
+            return { activeId: nextActive };
         },
 
         loadTableInfo(objectRef, operationCtx = captureOperationCtx()) {
@@ -119,6 +224,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             const key = objectCacheKey(objectRef);
             const existingId = session.registry.order.find((id) => session.registry.byId[id]?.key === key);
             if (existingId !== undefined) {
+                session.surface = "object";
                 commit({ type: "ACTIVATE", id: existingId });
                 return { workspaceId: existingId, created: false, activeId: session.registry.activeId };
             }
@@ -127,7 +233,8 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             dataRuntimeFor(session, key, objectRef, undefined, workspaceId, generation);
             if (!(session.queryState instanceof Map))
                 session.queryState = new Map();
-            session.queryState.set(key, { sql: `SELECT * FROM ${qualifiedName(session.conn.engine, objectRef)}`, results: null, exportContext: null });
+            session.queryState.set(key, { sql: "", results: null, exportContext: null });
+            session.surface = "object";
             commit({ type: "OPEN", id: workspaceId, key, generation, ref: objectRef });
             return { workspaceId, created: true, activeId: session.registry.activeId };
         },
@@ -135,6 +242,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         setActive(workspaceId) {
             if (!entryById(workspaceId))
                 return STALE_WORKSPACE;
+            session.surface = "object";
             commit({ type: "ACTIVATE", id: workspaceId });
             return { activeId: session.registry.activeId };
         },
@@ -345,6 +453,18 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         },
 
         initiateQueryExecute(workspaceId, sql, mode) {
+            if (workspaceId == null)
+                return { error: "QUERY_TAB_REQUIRED" };
+            const sqlEntry = sqlEntryById(workspaceId);
+            if (sqlEntry) {
+                if (!QUERY_MODES.includes(mode))
+                    return { error: "INVALID_QUERY_MODE" };
+                if (!sql?.trim())
+                    return { error: "INVALID_SQL" };
+                const owner = session.sqlOwners.get(sqlEntry.key);
+                owner.queryRequest = (owner.queryRequest || 0) + 1;
+                return { operationCtx: captureOperationCtx(), sqlTabId: workspaceId, sqlKey: sqlEntry.key, queryToken: owner.queryRequest, sql, mode };
+            }
             const entry = entryById(workspaceId);
             if (!entry)
                 return STALE_WORKSPACE;

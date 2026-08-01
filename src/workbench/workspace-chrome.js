@@ -10,17 +10,20 @@ export function projectWorkspaceTabs({ order = [], byId = {}, activeId = null, c
     return order
         .map((id) => byId[id])
         .filter(Boolean)
-        .map((workspace) => ({
-            id: workspace.id,
-            key: workspace.key,
-            name: workspace.ref.table,
-            title: workspaceTabTitle(workspace.ref),
-            icon: workspace.ref.kind === "view" ? "eye" : "table",
-            active: workspace.id === activeId,
-            dirty: pendingChangeCountFor(changesByKey, workspace.key) > 0,
-            dirtyLabel: WORKSPACE_DIRTY_LABEL,
-            closeLabel: `Close ${workspace.ref.table}`,
-        }));
+        .map((workspace) => {
+            const name = workspace.kind === "sql" ? workspace.name : workspace.ref.table;
+            return {
+                id: workspace.id,
+                key: workspace.key,
+                name,
+                title: workspace.kind === "sql" ? workspace.title : workspaceTabTitle(workspace.ref),
+                icon: workspace.kind === "sql" ? "code" : workspace.ref.kind === "view" ? "eye" : "table",
+                active: workspace.id === activeId,
+                dirty: pendingChangeCountFor(changesByKey, workspace.key) > 0,
+                dirtyLabel: WORKSPACE_DIRTY_LABEL,
+                closeLabel: `Close ${name}`,
+            };
+        });
 }
 
 export function workspaceSwitchMenuItems({ order = [], byId = {}, onActivate } = {}) {
@@ -28,7 +31,7 @@ export function workspaceSwitchMenuItems({ order = [], byId = {}, onActivate } =
         .map((id) => byId[id])
         .filter(Boolean)
         .map((workspace) => ({
-            label: workspace.ref.table,
+            label: workspace.kind === "sql" ? workspace.name : workspace.ref.table,
             onClick: () => onActivate?.(workspace.id),
         }));
 }

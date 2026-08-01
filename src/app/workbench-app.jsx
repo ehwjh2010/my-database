@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { EmptyState } from "../ui/empty-state.jsx";
 import { Icon } from "../ui/icon.jsx";
 import { getConnection, touchConnection } from "../lib/connections.js";
-import { openSession } from "../workbench/state.js";
+import { hasDatabase, openSession } from "../workbench/state.js";
 import { createWorkspaceCoordinator } from "../workbench/workspace-coordinator.js";
 import { SessionProvider } from "../workbench/session-context.jsx";
 import { Workbench } from "../workbench/workbench.jsx";
@@ -61,19 +61,22 @@ export function WorkbenchApp() {
         muxy.events?.subscribe?.("command.new-query", () => {
             if (muxy.focused === false || !sessionRef.current)
                 return;
-            if (!sessionRef.current.coordinator?.getActive())
+            if (!hasDatabase(sessionRef.current))
                 return;
-            setViewRef.current?.("query");
+            sessionRef.current.coordinator?.newQuery();
         });
         muxy.events?.subscribe?.("command.run-query", () => {
             if (muxy.focused === false || !sessionRef.current)
                 return;
-            if (!sessionRef.current.coordinator?.getActive())
+            const session = sessionRef.current;
+            if (!hasDatabase(session))
+                return;
+            if (session.surface === "console" && !session.coordinator?.getActiveSql())
                 return;
             if (queryHooksRef.current)
                 queryHooksRef.current.run();
             else
-                setViewRef.current?.("query");
+                setViewRef.current?.(session.surface === "console" ? "console" : "query");
         });
         muxy.lifecycle?.onBeforeClose?.(async () => {
             const coordinator = sessionRef.current?.coordinator;

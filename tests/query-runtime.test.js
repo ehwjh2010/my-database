@@ -4,7 +4,7 @@ import test from "node:test";
 import { createWorkspaceCoordinator } from "../src/workbench/workspace-coordinator.js";
 import { commitQueryError, commitQueryResult, isCurrentQueryRequest } from "../src/workbench/query-runtime.js";
 
-function stubSession() {
+function stubSession(overrides = {}) {
     return {
         conn: { engine: "sqlite" },
         ctx: { database: "app", schema: "main" },
@@ -22,6 +22,7 @@ function stubSession() {
         structureCache: new Map(),
         workspaceOwners: new Map(),
         scopeGeneration: 0,
+        ...overrides,
     };
 }
 
@@ -90,4 +91,19 @@ test("query state stays isolated across workspaces and scope epochs", () => {
     session.scopeGeneration = 1;
     assert.equal(isCurrentQueryRequest(session, ordersRequest), false);
     assert.equal(commitQueryResult(session, ordersRequest, [{ columns: [{ name: "id" }], rows: [[1]] }]), false);
+});
+
+test("SQL tab query results stay isolated and expose export context", () => {
+    const session = stubSession({ conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } } });
+    const coordinator = createWorkspaceCoordinator(session);
+    const { sqlTabId } = coordinator.newQuery();
+    const request = coordinator.initiateQueryExecute(sqlTabId, "SELECT 1", "execute");
+    const result = { columns: [{ name: "id" }], rows: [[1]] };
+
+    assert.equal(commitQueryResult(session, request, [result]), true);
+    assert.deepEqual(session.sqlState.get(request.sqlKey), {
+        sql: "",
+        results: { results: [result] },
+        exportContext: { objectRef: undefined, result },
+    });
 });
