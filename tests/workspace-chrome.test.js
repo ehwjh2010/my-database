@@ -126,6 +126,25 @@ test("projectWorkspaceTabs reflects SQL draft dirty state from the SQL tab entry
     assert.equal(tabs[0].dirty, true);
 });
 
+test("projectWorkspaceTabs exposes save failure and external conflict status without changing tab dimensions", () => {
+    const tabs = projectWorkspaceTabs({
+        order: [4, 5],
+        activeId: 4,
+        byId: {
+            4: { id: 4, key: "sql:4", kind: "sql", name: "failed.sql", title: "failed.sql", dirty: true, saveFailed: true },
+            5: { id: 5, key: "sql:5", kind: "sql", name: "conflict.sql", title: "conflict.sql", dirty: true, externalConflict: true },
+        },
+        changesByKey: null,
+    });
+
+    assert.equal(tabs[0].saveFailed, true);
+    assert.equal(tabs[0].statusLabel, "Save failed");
+    assert.equal(tabs[0].dirty, true);
+    assert.equal(tabs[1].externalConflict, true);
+    assert.equal(tabs[1].statusLabel, "External changes");
+    assert.equal(tabs[1].dirty, true);
+});
+
 test("closeWorkspaceTabIntent stops propagation before closing and never activates", () => {
     const calls = [];
     let propagationStopped = false;

@@ -120,12 +120,12 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
     const createSqlTab = (file, content, observedVersion) => {
         const id = ++session.sqlTabIdCounter;
         const key = `sql:${id}`;
-        session.sqlState.set(key, { sql: content, results: null, exportContext: null, observedVersion, dirty: false, saveError: null });
+        session.sqlState.set(key, { sql: content, results: null, exportContext: null, observedVersion, dirty: false, saveStatus: "clean", saveFailed: false, saveError: null, conflictStatus: "none", externalConflict: false });
         session.sqlOwners.set(key, { queryRequest: 0, saveTimer: null, savePromise: null, savePending: false });
         session.sqlRegistry = {
             order: [...session.sqlRegistry.order, id],
             activeId: id,
-            byId: { ...session.sqlRegistry.byId, [id]: { id, key, kind: "sql", name: file.name, title: file.name, path: file.path, reserved: Boolean(file.reserved), observedVersion, dirty: false } },
+            byId: { ...session.sqlRegistry.byId, [id]: { id, key, kind: "sql", name: file.name, title: file.name, path: file.path, reserved: Boolean(file.reserved), observedVersion, dirty: false, saveStatus: "clean", saveFailed: false, saveError: null, conflictStatus: "none", externalConflict: false } },
         };
         session.surface = "console";
         emit();
@@ -160,24 +160,33 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
                 const dirty = currentState.sql !== content;
                 currentState.observedVersion = result.version;
                 currentState.dirty = dirty;
+                currentState.saveStatus = dirty ? "saving" : "clean";
+                currentState.saveFailed = false;
                 currentState.saveError = null;
-                updateSqlEntry(sqlTabId, { observedVersion: result.version, dirty });
+                currentState.conflictStatus = "none";
+                currentState.externalConflict = false;
+                updateSqlEntry(sqlTabId, { observedVersion: result.version, dirty, saveStatus: currentState.saveStatus, saveFailed: false, saveError: null, conflictStatus: "none", externalConflict: false });
                 emit();
             }
             catch (error) {
                 if (session.sqlOwners.get(entry.key) !== owner)
                     return;
                 const currentState = session.sqlState.get(entry.key);
+                const externalConflict = error?.code === "FILE_VERSION_CONFLICT";
                 currentState.dirty = true;
+                currentState.saveStatus = externalConflict ? "clean" : "saveFailed";
+                currentState.saveFailed = !externalConflict;
                 currentState.saveError = error;
-                updateSqlEntry(sqlTabId, { dirty: true });
+                currentState.conflictStatus = externalConflict ? "externalConflict" : currentState.conflictStatus;
+                currentState.externalConflict = externalConflict || currentState.externalConflict;
+                updateSqlEntry(sqlTabId, { dirty: true, saveStatus: currentState.saveStatus, saveFailed: currentState.saveFailed, saveError: error, conflictStatus: currentState.conflictStatus, externalConflict: currentState.externalConflict });
                 emit();
             }
         })();
         await owner.savePromise;
         owner.savePromise = null;
         const currentState = session.sqlState.get(entry.key);
-        if (session.sqlOwners.get(entry.key) === owner && (owner.savePending || currentState?.sql !== content)) {
+        if (session.sqlOwners.get(entry.key) === owner && !currentState?.externalConflict && (owner.savePending || currentState?.sql !== content)) {
             owner.savePending = false;
             void flushSqlDraft(sqlTabId, owner);
         }
@@ -189,6 +198,30 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             owner.saveTimer = null;
             void flushSqlDraft(sqlTabId, owner);
         }, 500);
+    };
+    const sqlNeedsUnsavedGuard = (entry) => {
+        const state = session.sqlState.get(entry.key);
+        return Boolean(state?.dirty || state?.saveFailed || state?.externalConflict || entry.dirty || entry.saveFailed || entry.externalConflict);
+    };
+    const confirmSqlAction = (entry, action) => {
+        if (!sqlNeedsUnsavedGuard(entry))
+            return null;
+        return (async () => {
+            let choice;
+            try {
+                choice = await adapters.confirm?.({
+                    title: "Discard unsaved changes?",
+                    message: `${entry.name} has unsaved changes that will be lost.`,
+                    buttons: [action, "Cancel"],
+                    cancel: "Cancel",
+                    style: "warning",
+                });
+            }
+            catch {
+                return { error: "CONFIRMATION_FAILED" };
+            }
+            return choice === action ? null : { outcome: "cancelled" };
+        })();
     };
 
     const coordinator = {
@@ -288,12 +321,37 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
                 return { error: "QUERY_TAB_REQUIRED" };
             state.sql = content;
             state.dirty = true;
-            state.saveError = null;
+            state.saveStatus = state.externalConflict ? "clean" : "saving";
+            state.saveFailed = false;
+            if (!state.externalConflict)
+                state.saveError = null;
             const owner = session.sqlOwners.get(entry.key);
-            updateSqlEntry(sqlTabId, { dirty: true });
-            scheduleSqlDraft(sqlTabId, owner);
+            updateSqlEntry(sqlTabId, { dirty: true, saveStatus: state.saveStatus, saveFailed: false, saveError: state.saveError });
+            if (!state.externalConflict)
+                scheduleSqlDraft(sqlTabId, owner);
             emit();
             return { sqlTabId, dirty: true };
+        },
+
+        async retrySqlSave(sqlTabId) {
+            const entry = sqlEntryById(sqlTabId);
+            const state = sqlStateFor(sqlTabId);
+            const owner = entry && session.sqlOwners.get(entry.key);
+            if (!entry || !state || !owner)
+                return { error: "QUERY_TAB_REQUIRED" };
+            if (owner.saveTimer) {
+                clearTimeout(owner.saveTimer);
+                owner.saveTimer = null;
+            }
+            owner.savePending = false;
+            state.saveStatus = "saving";
+            state.saveFailed = false;
+            state.saveError = null;
+            updateSqlEntry(sqlTabId, { saveStatus: "saving", saveFailed: false, saveError: null });
+            emit();
+            await flushSqlDraft(sqlTabId, owner);
+            const current = sqlStateFor(sqlTabId);
+            return { sqlTabId, dirty: current.dirty, saveFailed: current.saveFailed, externalConflict: current.externalConflict };
         },
 
         async renameSqlFile(sqlTabId, rawName, expectedVersion) {
@@ -327,6 +385,14 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
                 return { error: "QUERY_TAB_REQUIRED" };
             if (entry.reserved || entry.name?.toLowerCase() === "console.sql")
                 return { error: "FILE_RESERVED" };
+            const unsaved = confirmSqlAction(entry, "Delete");
+            if (unsaved) {
+                const result = await unsaved;
+                if (result)
+                    return result;
+                if (sqlEntryById(sqlTabId) !== entry)
+                    return { error: "QUERY_TAB_REQUIRED" };
+            }
             let choice;
             try {
                 choice = await adapters.confirm?.({
@@ -346,7 +412,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             const namespace = session.sqlNamespace || await api.getNamespace({ conn: session.conn, database: currentDatabase(session) });
             await api.trashSqlFile(namespace, entry.name, entry.observedVersion);
             setSqlFiles(session.sqlFiles.filter((item) => item.name !== entry.name));
-            const closed = coordinator.closeSql(sqlTabId);
+            const closed = coordinator.closeSqlNow(sqlTabId);
             return { outcome: "trashed", sqlTabId, activeId: closed.activeId };
         },
 
@@ -360,6 +426,16 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         },
 
         closeSql(sqlTabId) {
+            const entry = sqlEntryById(sqlTabId);
+            if (!entry)
+                return { error: "QUERY_TAB_REQUIRED" };
+            const guard = confirmSqlAction(entry, "Close");
+            if (guard)
+                return guard.then((result) => result || coordinator.closeSqlNow(sqlTabId));
+            return coordinator.closeSqlNow(sqlTabId);
+        },
+
+        closeSqlNow(sqlTabId) {
             const entry = sqlEntryById(sqlTabId);
             if (!entry)
                 return { error: "QUERY_TAB_REQUIRED" };

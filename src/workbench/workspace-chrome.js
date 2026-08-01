@@ -12,6 +12,7 @@ export function projectWorkspaceTabs({ order = [], byId = {}, activeId = null, c
         .filter(Boolean)
         .map((workspace) => {
             const name = workspace.kind === "sql" ? workspace.name : workspace.ref.table;
+            const status = workspace.externalConflict ? { externalConflict: true, statusLabel: "External changes" } : workspace.saveFailed ? { saveFailed: true, statusLabel: "Save failed" } : {};
             return {
                 id: workspace.id,
                 key: workspace.key,
@@ -22,6 +23,7 @@ export function projectWorkspaceTabs({ order = [], byId = {}, activeId = null, c
                 dirty: Boolean(workspace.dirty) || pendingChangeCountFor(changesByKey, workspace.key) > 0,
                 dirtyLabel: WORKSPACE_DIRTY_LABEL,
                 closeLabel: `Close ${name}`,
+                ...status,
             };
         });
 }

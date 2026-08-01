@@ -30,13 +30,16 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
     const key = entry?.key;
     const stateMap = isSqlTab ? session.sqlState : session.queryState;
     const qs = key ? (stateMap.get(key) || { sql: "", results: null, exportContext: null }) : { sql: "", results: null, exportContext: null };
+    const saveFailed = isSqlTab && qs.saveFailed;
+    const externalConflict = isSqlTab && qs.externalConflict;
+    const saveError = qs.saveError;
     const [draft, setDraft] = useState(() => qs.sql);
     const [results, setResults] = useState(() => qs.results);
 
     useEffect(() => {
         setDraft(qs.sql);
         setResults(qs.results);
-    }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [key]);
 
     if (!entry || !key)
         return null;
@@ -130,6 +133,12 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
         await execute(sql, "explain");
     };
 
+    const retrySave = async () => {
+        const result = await session.coordinator.retrySqlSave(tabId);
+        if (result?.error)
+            setStatus("Error");
+    };
+
     useEffect(() => {
         queryHooksRef.current = { run: () => runRef.current() };
         return () => { queryHooksRef.current = null; };
@@ -171,6 +180,13 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                         </button>
                     ) : null}
                 </div>
+                {saveFailed || externalConflict ? (
+                    <div className={`save-feedback ${externalConflict ? "external-conflict" : "save-failed"}`} data-testid="sql-save-feedback" data-save-state={externalConflict ? "externalConflict" : "saveFailed"} role="alert">
+                        <Icon name="warning" />
+                        <span>{saveError?.message || String(saveError)}</span>
+                        {saveFailed ? <button className="btn btn-compact" data-testid="sql-save-retry" onClick={() => { void retrySave(); }}><Icon name="refresh" />Retry</button> : null}
+                    </div>
+                ) : null}
                 <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
                     <SqlEditorView
                         engine={session.conn.engine}

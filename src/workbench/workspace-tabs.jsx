@@ -44,7 +44,7 @@ export function WorkspaceTabs({ order = [], activeId, byId = {}, changesByKey, o
                     >
                         <Icon name={tab.icon} />
                         <span className="workspace-tab-name">{tab.name}</span>
-                        {tab.dirty ? <span className="workspace-tab-dirty" role="img" aria-label={tab.dirtyLabel} title={tab.dirtyLabel} /> : null}
+                        {tab.dirty ? <span className={`workspace-tab-dirty ${tab.saveFailed ? "save-failed" : ""} ${tab.externalConflict ? "external-conflict" : ""}`} data-save-state={tab.externalConflict ? "externalConflict" : tab.saveFailed ? "saveFailed" : "dirty"} role="img" aria-label={tab.statusLabel || tab.dirtyLabel} title={tab.statusLabel || tab.dirtyLabel} /> : null}
                         <button
                             type="button"
                             className="workspace-tab-close"

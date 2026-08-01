@@ -1353,6 +1353,176 @@ test("failed SQL autosave keeps the draft dirty and visible", async () => {
     assert.equal(state.dirty, true);
     assert.match(state.saveError.message, /write failed/);
     assert.equal(session.sqlRegistry.byId[opened.sqlTabId].dirty, true);
+    assert.equal(session.sqlRegistry.byId[opened.sqlTabId].saveFailed, true);
+    assert.equal(session.sqlRegistry.byId[opened.sqlTabId].saveError, state.saveError);
+});
+
+test("SQL save failure stops automatic retries and explicit Retry saves the same draft", async () => {
+    const version = { sha256: "hash", size: 9, mtimeMs: 4 };
+    const savedVersion = { sha256: "saved", size: 14, mtimeMs: 5 };
+    let attempts = 0;
+    const session = stubSession({
+        conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } },
+        sqlNamespace: { databaseDir: "/tmp/sql", fingerprint: "fingerprint", databaseKey: "fingerprint" },
+        sqlFiles: [{ name: "saved.sql", path: "/tmp/sql/saved.sql", size: 9, mtimeMs: 4, reserved: false }],
+        consoleState: { phase: "ready", files: [], error: null },
+    });
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({
+        sqlFiles: {
+            async readSqlFile() {
+                return { content: "SELECT 1;", version };
+            },
+            async saveSqlFile() {
+                attempts += 1;
+                if (attempts === 1)
+                    throw new Error("temporary write failure");
+                return { version: savedVersion };
+            },
+        },
+    }));
+
+    const opened = await coordinator.openSqlFile("saved.sql");
+    const state = session.sqlState.get(session.sqlRegistry.byId[opened.sqlTabId].key);
+    coordinator.updateSqlDraft(opened.sqlTabId, "SELECT retry me;");
+
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    assert.equal(attempts, 1);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(attempts, 1);
+
+    const retry = await coordinator.retrySqlSave(opened.sqlTabId);
+
+    assert.deepEqual(retry, { sqlTabId: opened.sqlTabId, dirty: false, saveFailed: false, externalConflict: false });
+    assert.equal(attempts, 2);
+    assert.equal(state.sql, "SELECT retry me;");
+    assert.equal(state.saveError, null);
+    assert.equal(session.sqlRegistry.byId[opened.sqlTabId].saveStatus, "clean");
+});
+
+test("cancelling an unsaved SQL tab close preserves the tab, draft, result, and file state", async () => {
+    const version = { sha256: "hash", size: 9, mtimeMs: 4 };
+    const files = [{ name: "saved.sql", path: "/tmp/sql/saved.sql", size: 9, mtimeMs: 4, reserved: false }];
+    const session = stubSession({
+        conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } },
+        sqlNamespace: { databaseDir: "/tmp/sql", fingerprint: "fingerprint", databaseKey: "fingerprint" },
+        sqlFiles: files,
+        consoleState: { phase: "ready", files, error: null },
+    });
+    let asked = 0;
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({
+        confirm: async (options) => {
+            asked += 1;
+            assert.equal(options.buttons[1], "Cancel");
+            return "Cancel";
+        },
+        sqlFiles: {
+            async readSqlFile() {
+                return { content: "SELECT 1;", version };
+            },
+            async saveSqlFile() {
+                return { version };
+            },
+        },
+    }));
+
+    const opened = await coordinator.openSqlFile("saved.sql");
+    const entry = session.sqlRegistry.byId[opened.sqlTabId];
+    const state = session.sqlState.get(entry.key);
+    state.results = { results: [{ rows: [[1]], columns: [] }] };
+    const filesBefore = session.sqlFiles;
+    coordinator.updateSqlDraft(opened.sqlTabId, "SELECT unsaved;");
+    const registry = session.sqlRegistry;
+
+    const result = await coordinator.closeSql(opened.sqlTabId);
+
+    assert.deepEqual(result, { outcome: "cancelled" });
+    assert.equal(asked, 1);
+    assert.equal(session.sqlRegistry, registry);
+    assert.equal(session.sqlState.get(entry.key), state);
+    assert.equal(state.sql, "SELECT unsaved;");
+    assert.deepEqual(state.results, { results: [{ rows: [[1]], columns: [] }] });
+    assert.equal(session.sqlFiles, filesBefore);
+    clearTimeout(session.sqlOwners.get(entry.key).saveTimer);
+});
+
+test("SQL Delete uses the unsaved gate before the Trash confirmation", async () => {
+    const version = { sha256: "hash", size: 9, mtimeMs: 4 };
+    const confirmations = ["Cancel", "Delete", "Delete"];
+    const calls = [];
+    const session = stubSession({
+        conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } },
+        sqlNamespace: { databaseDir: "/tmp/sql", fingerprint: "fingerprint", databaseKey: "fingerprint" },
+        sqlFiles: [{ name: "saved.sql", path: "/tmp/sql/saved.sql", size: 9, mtimeMs: 4, reserved: false }],
+        consoleState: { phase: "ready", files: [], error: null },
+    });
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({
+        confirm: async (options) => {
+            calls.push(options.title);
+            return confirmations.shift();
+        },
+        sqlFiles: {
+            async readSqlFile() {
+                return { content: "SELECT 1;", version };
+            },
+            async saveSqlFile() {
+                return { version };
+            },
+            async trashSqlFile() {
+                return { name: "saved.sql", path: "/tmp/sql/saved.sql", trashed: true };
+            },
+        },
+    }));
+
+    const opened = await coordinator.openSqlFile("saved.sql");
+    coordinator.updateSqlDraft(opened.sqlTabId, "SELECT unsaved;");
+
+    assert.deepEqual(await coordinator.trashSqlFile(opened.sqlTabId), { outcome: "cancelled" });
+    assert.deepEqual(session.sqlRegistry.order, [opened.sqlTabId]);
+    assert.deepEqual(calls, ["Discard unsaved changes?"]);
+
+    assert.deepEqual(await coordinator.trashSqlFile(opened.sqlTabId), { outcome: "trashed", sqlTabId: opened.sqlTabId, activeId: null });
+    assert.deepEqual(calls, ["Discard unsaved changes?", "Discard unsaved changes?", "Move SQL file to Trash?"]);
+});
+
+test("external SQL file changes enter conflict state and pause debounce retries", async () => {
+    const version = { sha256: "hash", size: 9, mtimeMs: 4 };
+    const conflict = Object.assign(new Error("FILE_VERSION_CONFLICT: saved.sql"), { code: "FILE_VERSION_CONFLICT" });
+    let attempts = 0;
+    const session = stubSession({
+        conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } },
+        sqlNamespace: { databaseDir: "/tmp/sql", fingerprint: "fingerprint", databaseKey: "fingerprint" },
+        sqlFiles: [{ name: "saved.sql", path: "/tmp/sql/saved.sql", size: 9, mtimeMs: 4, reserved: false }],
+        consoleState: { phase: "ready", files: [], error: null },
+    });
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({
+        sqlFiles: {
+            async readSqlFile() {
+                return { content: "SELECT 1;", version };
+            },
+            async saveSqlFile() {
+                attempts += 1;
+                throw conflict;
+            },
+        },
+    }));
+
+    const opened = await coordinator.openSqlFile("saved.sql");
+    const entry = session.sqlRegistry.byId[opened.sqlTabId];
+    const state = session.sqlState.get(entry.key);
+    coordinator.updateSqlDraft(opened.sqlTabId, "SELECT conflict;");
+    await new Promise((resolve) => setTimeout(resolve, 550));
+
+    assert.equal(attempts, 1);
+    assert.equal(state.dirty, true);
+    assert.equal(state.saveFailed, false);
+    assert.equal(state.externalConflict, true);
+    assert.equal(state.conflictStatus, "externalConflict");
+    assert.equal(state.saveError, conflict);
+    coordinator.updateSqlDraft(opened.sqlTabId, "SELECT conflict again;");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(attempts, 1);
+    assert.equal(session.sqlRegistry.byId[opened.sqlTabId].externalConflict, true);
+    assert.equal(state.saveError, conflict);
 });
 
 test("renaming an SQL tab updates file and tab metadata while preserving runtime state", async () => {
