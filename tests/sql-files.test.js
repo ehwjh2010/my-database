@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import test from "node:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -412,6 +412,79 @@ test("saveSqlFile rejects an unexpected on-disk hash without replacing bytes", a
     }
 });
 
+test("saveSqlFile preserves the source and cleans temporary files when the private writer fails", async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "muxy-sql-files-")));
+    const rootDir = join(base, "root");
+    const fingerprint = "fingerprint";
+    const databaseKey = "db-key";
+    const databaseDir = join(rootDir, fingerprint, databaseKey);
+    const namespace = { rootDir, fingerprint, databaseKey, databaseDir };
+    let injectedFailure = false;
+    execHandler = (argv) => new Promise((resolve, reject) => {
+        const command = [...argv];
+        if (argv[0] === "perl" && argv[3] === "write") {
+            const marker = 'sysopen($fh, $temp, O_WRONLY | O_CREAT | O_EXCL, 0600) or fail("FILE_WRITE_FAILED", $temp . ": " . $!);';
+            command[2] = command[2].replace(marker, `${marker}\n        fail("FILE_WRITE_FAILED", "injected failure");`);
+            injectedFailure = command[2] !== argv[2];
+        }
+        const child = spawn(command[0], command.slice(1));
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (chunk) => stdout += chunk);
+        child.stderr.on("data", (chunk) => stderr += chunk);
+        child.on("error", reject);
+        child.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+    });
+
+    try {
+        await ensureConsoleFile(namespace);
+        const file = await createSqlFile(namespace, "draft");
+        await writeFile(file.path, "SELECT original;");
+        const observed = await readSqlFile(namespace, file.name);
+
+        await assert.rejects(saveSqlFile(namespace, file.name, "SELECT replacement;", observed.version), { code: "FILE_WRITE_FAILED" });
+        assert.equal(injectedFailure, true);
+        assert.equal(await readFile(file.path, "utf8"), "SELECT original;");
+        assert.equal((await readdir(databaseDir)).some((name) => name.includes(".muxy-save-")), false);
+    }
+    finally {
+        execHandler = async () => ({ exitCode: 0, stdout: "/Users/test-user\n", stderr: "" });
+        await rm(base, { recursive: true, force: true });
+    }
+});
+
+test("saveSqlFile and renameSqlFile do not recreate a missing namespace", async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "muxy-sql-files-")));
+    const rootDir = join(base, "root");
+    const fingerprint = "fingerprint";
+    const databaseKey = "db-key";
+    const fingerprintDir = join(rootDir, fingerprint);
+    const databaseDir = join(fingerprintDir, databaseKey);
+    const namespace = { rootDir, fingerprint, databaseKey, databaseDir };
+    const version = { sha256: "missing", size: 0, mtimeMs: 0 };
+    execHandler = (argv) => new Promise((resolve, reject) => {
+        const child = spawn(argv[0], argv.slice(1));
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (chunk) => stdout += chunk);
+        child.stderr.on("data", (chunk) => stderr += chunk);
+        child.on("error", reject);
+        child.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+    });
+
+    try {
+        await assert.rejects(saveSqlFile(namespace, "draft.sql", "SELECT 1;", version), { code: "FILE_PERMISSION_FAILED" });
+        await assert.rejects(renameSqlFile(namespace, "draft.sql", "renamed.sql", version), { code: "FILE_PERMISSION_FAILED" });
+        await assert.rejects(stat(rootDir), { code: "ENOENT" });
+        await assert.rejects(stat(fingerprintDir), { code: "ENOENT" });
+        await assert.rejects(stat(databaseDir), { code: "ENOENT" });
+    }
+    finally {
+        execHandler = async () => ({ exitCode: 0, stdout: "/Users/test-user\n", stderr: "" });
+        await rm(base, { recursive: true, force: true });
+    }
+});
+
 test("saveSqlFile sends large UTF-8 content in bounded argv chunks", async () => {
     const base = await realpath(await mkdtemp(join(tmpdir(), "muxy-sql-files-")));
     const rootDir = join(base, "root");
@@ -436,7 +509,7 @@ test("saveSqlFile sends large UTF-8 content in bounded argv chunks", async () =>
         const content = "😀".repeat(120000);
         await saveSqlFile(namespace, file.name, content, observed.version);
         const saveArgs = calls.at(-1);
-        const chunks = saveArgs.slice(10);
+        const chunks = saveArgs.slice(9);
 
         assert.ok(chunks.length > 1);
         assert.ok(chunks.every((chunk) => Buffer.byteLength(chunk) <= 96 * 1024));
@@ -513,6 +586,11 @@ test("renameSqlFile leaves the source untouched on a stale version or target col
         const target = await createSqlFile(namespace, "renamed");
         const current = await readSqlFile(namespace, source.name);
         await assert.rejects(renameSqlFile(namespace, source.name, target.name, current.version), { code: "FILE_EXISTS" });
+        assert.equal(await readFile(source.path, "utf8"), "SELECT 2;");
+
+        const unicodeTarget = await createSqlFile(namespace, "中");
+        const unicodeCurrent = await readSqlFile(namespace, source.name);
+        await assert.rejects(renameSqlFile(namespace, source.name, unicodeTarget.name, unicodeCurrent.version), { code: "FILE_EXISTS" });
         assert.equal(await readFile(source.path, "utf8"), "SELECT 2;");
     }
     finally {
