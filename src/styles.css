@@ -726,6 +726,30 @@ textarea:focus {
   flex-shrink: 0;
 }
 
+.save-feedback {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  min-width: 0;
+  min-height: var(--toolbar-height);
+  padding: 0 var(--s5);
+  border-bottom: 1px solid var(--muxy-border);
+  color: var(--muxy-diff-remove);
+  flex-shrink: 0;
+}
+
+.save-feedback.external-conflict {
+  color: var(--muxy-diff-hunk);
+}
+
+.save-feedback > span {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .conn-dot {
   width: var(--icon-sm);
   height: var(--icon-sm);
@@ -1085,6 +1109,14 @@ textarea:focus {
   color: var(--muxy-foreground);
 }
 
+.workspace-tabs-new {
+  order: 2;
+}
+
+.workspace-tabs-all:not(.workspace-tabs-new) {
+  order: 3;
+}
+
 .workspace-tabs-all:disabled {
   cursor: default;
   opacity: 0.45;
@@ -1140,6 +1172,14 @@ textarea:focus {
   flex: 0 0 6px;
   border-radius: 50%;
   background: var(--muxy-accent);
+}
+
+.workspace-tab-dirty.save-failed {
+  background: var(--muxy-diff-remove);
+}
+
+.workspace-tab-dirty.external-conflict {
+  background: var(--muxy-diff-hunk);
 }
 
 .workspace-tab-close {

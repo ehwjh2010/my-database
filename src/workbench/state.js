@@ -5,6 +5,18 @@ import { getPref } from "../lib/storage.js";
 import { ensureTunnel } from "../lib/tunnel.js";
 import { ensurePassword, hasKeychain } from "../lib/credentials.js";
 
+export function currentDatabase(session) {
+    if (session?.conn?.engine === "sqlite")
+        return session.conn.sqlite?.path || "";
+    if (session?.ctx && Object.hasOwn(session.ctx, "database"))
+        return session.ctx.database || "";
+    return session?.conn?.net?.database || "";
+}
+
+export function hasDatabase(session) {
+    return Boolean(currentDatabase(session));
+}
+
 export async function buildContext(conn) {
     const ctx = { conn, database: conn.net?.database || "", schema: conn.engine === "postgres" ? "public" : "" };
     if (conn.net) {
@@ -46,6 +58,11 @@ export async function openSession(conn) {
         dataRuntime: new Map(),
         structureCache: new Map(),
         queryState: new Map(),
+        sqlState: new Map(),
+        sqlRegistry: { order: [], activeId: null, byId: {} },
+        sqlOwners: new Map(),
+        consoleState: { phase: "missing", files: [], error: null },
+        surface: "console",
         workspaceOwners: new Map(),
         scopeGeneration: 0,
         pageSize: Number(await getPref("pageSize")) || 200,

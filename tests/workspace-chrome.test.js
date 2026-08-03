@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { closeWorkspaceTabIntent, projectWorkspaceTabs, workspaceSwitchMenuItems, workspaceTabTitle } from "../src/workbench/workspace-chrome.js";
+import { closeWorkspaceTabIntent, projectWorkspaceTabs, sqlFileMenuItems, workspaceSwitchMenuItems, workspaceTabTitle } from "../src/workbench/workspace-chrome.js";
 
 function makeRegistry() {
     return {
@@ -72,6 +72,77 @@ test("workspaceSwitchMenuItems lists every workspace in tab order with activate-
 
 test("workspaceSwitchMenuItems is empty when no workspace is open", () => {
     assert.deepEqual(workspaceSwitchMenuItems({ order: [], byId: {}, onActivate: () => {} }), []);
+});
+
+test("sqlFileMenuItems includes create and unopened files, including console.sql", () => {
+    const opened = [];
+    const items = sqlFileMenuItems({
+        order: [4],
+        byId: { 4: { name: "open.sql" } },
+        files: [
+            { name: "console.sql", reserved: true },
+            { name: "open.sql", reserved: false },
+            { name: "saved.sql", reserved: false },
+        ],
+        onCreate: () => opened.push("create"),
+        onOpen: (file) => opened.push(file.name),
+    });
+
+    assert.deepEqual(items.map((item) => item.label), ["New SQL File...", "console.sql", "saved.sql"]);
+    items[0].onClick();
+    items[1].onClick();
+    assert.deepEqual(opened, ["create", "console.sql"]);
+});
+
+test("projectWorkspaceTabs renders SQL tabs with code icons and no dirty state", () => {
+    const tabs = projectWorkspaceTabs({
+        order: [4],
+        activeId: 4,
+        byId: { 4: { id: 4, key: "sql:4", kind: "sql", name: "New Query", title: "New Query" } },
+        changesByKey: null,
+    });
+
+    assert.deepEqual(tabs, [{
+        id: 4,
+        key: "sql:4",
+        name: "New Query",
+        title: "New Query",
+        icon: "code",
+        active: true,
+        dirty: false,
+        dirtyLabel: "Unsaved changes",
+        closeLabel: "Close New Query",
+    }]);
+});
+
+test("projectWorkspaceTabs reflects SQL draft dirty state from the SQL tab entry", () => {
+    const tabs = projectWorkspaceTabs({
+        order: [4],
+        activeId: 4,
+        byId: { 4: { id: 4, key: "sql:4", kind: "sql", name: "New Query", title: "New Query", dirty: true } },
+        changesByKey: null,
+    });
+
+    assert.equal(tabs[0].dirty, true);
+});
+
+test("projectWorkspaceTabs exposes save failure and external conflict status without changing tab dimensions", () => {
+    const tabs = projectWorkspaceTabs({
+        order: [4, 5],
+        activeId: 4,
+        byId: {
+            4: { id: 4, key: "sql:4", kind: "sql", name: "failed.sql", title: "failed.sql", dirty: true, saveFailed: true },
+            5: { id: 5, key: "sql:5", kind: "sql", name: "conflict.sql", title: "conflict.sql", dirty: true, externalConflict: true },
+        },
+        changesByKey: null,
+    });
+
+    assert.equal(tabs[0].saveFailed, true);
+    assert.equal(tabs[0].statusLabel, "Save failed");
+    assert.equal(tabs[0].dirty, true);
+    assert.equal(tabs[1].externalConflict, true);
+    assert.equal(tabs[1].statusLabel, "External changes");
+    assert.equal(tabs[1].dirty, true);
 });
 
 test("closeWorkspaceTabIntent stops propagation before closing and never activates", () => {

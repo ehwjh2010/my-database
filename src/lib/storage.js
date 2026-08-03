@@ -1,5 +1,3 @@
-const HISTORY_LIMIT = 300;
-const HISTORY_BYTES = 262144;
 const DRAFT_BYTES = 131072;
 
 async function read(key, fallback) {
@@ -22,32 +20,6 @@ export async function getConnections() {
 
 export async function setConnections(list) {
     await write("connections:v1", list);
-}
-
-export async function getHistory(connId) {
-    return read(`history:${connId}`, []);
-}
-
-export async function appendHistory(connId, entry) {
-    let list = [entry, ...(await getHistory(connId))];
-    if (list.length > HISTORY_LIMIT)
-        list = list.slice(0, HISTORY_LIMIT);
-    while (JSON.stringify(list).length > HISTORY_BYTES && list.length > 1)
-        list = list.slice(0, Math.floor(list.length / 2));
-    await write(`history:${connId}`, list);
-    return list;
-}
-
-export async function clearHistory(connId) {
-    await muxy.storage.delete(`history:${connId}`);
-}
-
-export async function getSavedQueries() {
-    return read("saved-queries:v1", []);
-}
-
-export async function setSavedQueries(list) {
-    await write("saved-queries:v1", list);
 }
 
 export async function getDrafts(connId) {
@@ -77,7 +49,7 @@ export async function setTunnels(list) {
 }
 
 export async function removeConnectionData(connId) {
-    for (const key of [`history:${connId}`, `drafts:${connId}`, `ui:${connId}`]) {
+    for (const key of [`drafts:${connId}`, `ui:${connId}`]) {
         try {
             await muxy.storage.delete(key);
         }

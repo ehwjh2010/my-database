@@ -1,14 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../ui/icon.jsx";
-import { toast } from "../ui/toast.js";
-import { appendHistory } from "../lib/storage.js";
-import { statementAt } from "../lib/sql/statement-split.js";
-import { selectedSql, insertSql } from "./sql-editor.js";
-import { exportResult } from "../transfer/transfer.js";
+import { Modal } from "../ui/modal.jsx";
+import { querySql } from "./sql-editor.js";
+import { exportActive } from "../transfer/transfer.js";
+import { ExportMenuModal } from "../transfer/transfer-menu.jsx";
 import { SqlEditorView } from "./sql-editor-view.jsx";
 import { Results } from "./results.jsx";
-import { HistoryPanel } from "./history-panel.jsx";
-import { SavedPanel } from "./saved-panel.jsx";
 import { commitQueryError, commitQueryResult, isCurrentQueryRequest } from "../workbench/query-runtime.js";
 
 export function schemaForCompletion(session) {
@@ -18,101 +15,103 @@ export function schemaForCompletion(session) {
     return schema;
 }
 
-export function QueryView({ session, workspaceId, setStatus, queryHooksRef }) {
+export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHooksRef }) {
     const editorRef = useRef(null);
-    const [panel, setPanel] = useState(null);
-    const [running, setRunning] = useState(false);
-    const [historyToken, setHistoryToken] = useState(0);
+    const [conflictOpen, setConflictOpen] = useState(false);
+    const [conflictBusy, setConflictBusy] = useState(false);
+    const [conflictActionError, setConflictActionError] = useState(null);
+    const [modalConflictVersion, setModalConflictVersion] = useState(null);
+    const [exportOpen, setExportOpen] = useState(false);
 
-    // Derive workspace state synchronously from session.queryState
-    const entry = session.registry.byId[workspaceId];
+    const isSqlTab = sqlTabId != null;
+    const tabId = isSqlTab ? sqlTabId : workspaceId;
+    const entry = isSqlTab ? session.sqlRegistry?.byId?.[sqlTabId] : session.registry.byId[workspaceId];
     const key = entry?.key;
-    const qs = key ? (session.queryState.get(key) || { sql: "", results: null, exportContext: null }) : { sql: "", results: null, exportContext: null };
+    const stateMap = isSqlTab ? session.sqlState : session.queryState;
+    const qs = key ? (stateMap.get(key) || { sql: "", results: null, exportContext: null }) : { sql: "", results: null, exportContext: null };
+    const saveFailed = isSqlTab && qs.saveFailed;
+    const externalConflict = isSqlTab && qs.externalConflict;
+    const saveError = qs.saveError;
     const [draft, setDraft] = useState(() => qs.sql);
-    const [results, setResults] = useState(() => qs.results);
 
-    // Sync local state when workspace changes (remount due to key={workspaceId})
     useEffect(() => {
         setDraft(qs.sql);
-        setResults(qs.results);
-    }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [key, qs.sql]);
+
+    useEffect(() => {
+        if (externalConflict) {
+            setConflictOpen(true);
+            setConflictActionError(null);
+            setModalConflictVersion(qs.conflictVersion);
+        }
+        else {
+            setConflictOpen(false);
+            setConflictBusy(false);
+            setModalConflictVersion(null);
+        }
+    }, [externalConflict, key, qs.conflictVersion]);
 
     if (!entry || !key)
         return null;
 
+    const isActive = () => isSqlTab
+        ? session.surface === "console" && session.sqlRegistry.activeId === sqlTabId
+        : session.surface === "object" && session.registry.activeId === workspaceId;
+
     const currentStatement = () => {
-        if (!editorRef.current) return "";
-        const selection = selectedSql(editorRef.current);
-        if (selection)
-            return selection.trim();
-        const offset = editorRef.current.state.selection.main.head;
-        return statementAt(editorRef.current.state.doc.toString(), offset, session.conn.engine)?.sql || "";
+        return editorRef.current ? querySql(editorRef.current) : "";
     };
 
     const setDraftText = useCallback((sql) => {
-        const store = session.queryState.get(key);
-        if (store) store.sql = sql;
+        if (isSqlTab)
+            session.coordinator.updateSqlDraft(tabId, sql);
+        else {
+            const store = stateMap.get(key);
+            if (store) store.sql = sql;
+        }
         setDraft(sql);
-    }, [key, session]);
+    }, [isSqlTab, key, session.coordinator, stateMap, tabId]);
 
     const execute = useCallback(
         async (sql, mode) => {
             const isExplain = mode === "explain";
-            const snapshot = session.coordinator.initiateQueryExecute(workspaceId, sql, mode);
+            const snapshot = session.coordinator.initiateQueryExecute(tabId, sql, mode);
             if (snapshot.error) {
                 setStatus("Error");
                 return;
             }
-            setRunning(true);
             setStatus(isExplain ? "Explaining\u2026" : "Running\u2026");
-            const started = Date.now();
-            try {
             let data;
             try {
                 data = isExplain
                     ? await session.driver.explain(snapshot.operationCtx, snapshot.sql, { timeoutMs: session.timeoutMs })
                     : await session.driver.runQuery(snapshot.operationCtx, snapshot.sql, { timeoutMs: session.timeoutMs });
             } catch (error) {
-                if (!commitQueryError(session, snapshot, error.message))
+                if (!commitQueryError(session, snapshot, isExplain ? "QUERY_EXPLAIN_FAILED" : error.message))
                     return;
-                if (session.registry.activeId === workspaceId) {
-                    setResults(session.queryState.get(key).results);
+                if (isActive()) {
                     setStatus("Error");
                 }
-                if (!isExplain && isCurrentQueryRequest(session, snapshot))
-                    await appendHistory(session.conn.id, { id: String(started), sql: snapshot.sql.slice(0, 4096), startedAt: started, durationMs: Date.now() - started, ok: false });
                 return;
             }
             if (!commitQueryResult(session, snapshot, data))
                 return;
             const rows = data.reduce((sum, r) => sum + r.rows.length, 0);
             const duration = data.reduce((sum, r) => sum + (r.durationMs || 0), 0);
-            if (session.registry.activeId === workspaceId) {
-                setResults(session.queryState.get(key).results);
+            if (isActive()) {
                 setStatus(`Done \u00b7 ${rows} rows \u00b7 ${duration}ms`);
             }
-            if (!isExplain && isCurrentQueryRequest(session, snapshot))
-                await appendHistory(session.conn.id, { id: String(started), sql: snapshot.sql.slice(0, 4096), startedAt: started, durationMs: duration, ok: true, rows });
-            } finally {
-                if (isCurrentQueryRequest(session, snapshot) && session.registry.activeId === workspaceId) {
-                    setRunning(false);
-                    setHistoryToken((n) => n + 1);
-                }
-            }
         },
-        [key, session, setStatus, workspaceId],
+        [key, session, setStatus, stateMap, tabId],
     );
 
-    const run = useCallback(
-        async (mode) => {
-            if (!editorRef.current) return;
-            const sql = mode === "all" ? editorRef.current.state.doc.toString().trim() : currentStatement();
-            if (!sql)
-                return;
-            await execute(sql, "execute");
-        },
-        [execute, session],
-    );
+    const run = useCallback(async () => {
+        if (!editorRef.current) return;
+        const sql = currentStatement();
+        if (!sql)
+            return;
+        await execute(sql, "execute");
+    }, [execute]);
 
     const runRef = useRef(run);
     runRef.current = run;
@@ -124,49 +123,104 @@ export function QueryView({ session, workspaceId, setStatus, queryHooksRef }) {
         await execute(sql, "explain");
     };
 
-    // Expose run command to parent via queryHooksRef
+    const retrySave = async () => {
+        const result = await session.coordinator.retrySqlSave(tabId);
+        if (result?.error)
+            setStatus("Error");
+    };
+
+    const reloadFromDisk = async () => {
+        if (conflictBusy)
+            return;
+        setConflictBusy(true);
+        setConflictActionError(null);
+        try {
+            const result = await session.coordinator.reloadSqlFile(tabId);
+            if (result?.error)
+                setConflictActionError(result.error);
+        }
+        catch (error) {
+            setConflictActionError(error?.message || String(error));
+        }
+        finally {
+            setConflictBusy(false);
+        }
+    };
+
+    const overwriteDisk = async () => {
+        if (conflictBusy)
+            return;
+        setConflictBusy(true);
+        setConflictActionError(null);
+        try {
+            const result = await session.coordinator.overwriteSqlFile(tabId, modalConflictVersion);
+            if (result?.error)
+                setConflictActionError(result.error);
+        }
+        catch (error) {
+            setConflictActionError(error?.message || String(error));
+            setModalConflictVersion(session.sqlState.get(key)?.conflictVersion || modalConflictVersion);
+            setConflictOpen(true);
+        }
+        finally {
+            setConflictBusy(false);
+        }
+    };
+
     useEffect(() => {
-        queryHooksRef.current = { run: () => runRef.current("cursor") };
+        queryHooksRef.current = { run: () => runRef.current() };
         return () => { queryHooksRef.current = null; };
     }, [queryHooksRef]);
 
-    const exportResults = async () => {
-        const context = session.queryState.get(key)?.exportContext;
-        if (!context?.result) {
-            toast("No result rows to export", "warning");
-            return;
-        }
-        await exportResult(session.conn.engine, context.objectRef, context.result, "csv");
+    const exportResults = async (format) => {
+        await exportActive(session, format);
     };
 
-    const togglePanel = (kind) => setPanel((prev) => (prev === kind ? null : kind));
+    const canExport = Boolean(qs.exportContext?.result?.columns?.length);
 
     return (
         <div className="flex min-h-0 flex-1">
             <div className="flex min-w-0 flex-1 flex-col">
                 <div className="toolbar border-b" style={{ borderColor: "var(--muxy-border)" }}>
-                    <button className="btn btn-compact btn-primary" disabled={running} onClick={() => run("cursor")}>
+                    <button className="btn btn-compact btn-primary" disabled={qs.queryRunning} onClick={run}>
                         <Icon name="play" />
                         Run
                     </button>
-                    <button className="btn btn-compact" title="Run every statement in this workspace" onClick={() => run("all")}>
-                        Run All
-                    </button>
-                    <button className="btn btn-compact" title="Explain the statement at the cursor" onClick={runExplain}>
+                    <button className="btn btn-compact" title="Explain the selected SQL or full file" disabled={qs.queryRunning} onClick={runExplain}>
                         Explain
                     </button>
-                    <span className="text-[var(--font-footnote)] text-muted-foreground">{"\u2318\u23ce statement \u00b7 \u21e7\u2318\u23ce all"}</span>
                     <div className="flex-1" />
-                    <button className="icon-btn" title="Export results as CSV" onClick={exportResults}>
+                    <button className="icon-btn" title="Export results" disabled={!canExport || qs.queryRunning} onClick={() => setExportOpen(true)}>
                         <Icon name="download" />
                     </button>
-                    <button className="icon-btn" title="Query history" onClick={() => togglePanel("history")}>
-                        <Icon name="clock" />
-                    </button>
-                    <button className="icon-btn" title="Saved queries" onClick={() => togglePanel("saved")}>
-                        <Icon name="star" />
-                    </button>
                 </div>
+                {saveFailed || externalConflict ? (
+                    <div className={`save-feedback ${externalConflict ? "external-conflict" : "save-failed"}`} data-testid="sql-save-feedback" data-save-state={externalConflict ? "externalConflict" : "saveFailed"} role="alert">
+                        <Icon name="warning" />
+                        <span>{saveError?.message || String(saveError)}</span>
+                        {saveFailed ? <button className="btn btn-compact" data-testid="sql-save-retry" onClick={() => { void retrySave(); }}><Icon name="refresh" />Retry</button> : null}
+                        {externalConflict ? <button className="btn btn-compact" data-testid="sql-conflict-resolve" onClick={() => { setConflictActionError(null); setModalConflictVersion(qs.conflictVersion); setConflictOpen(true); }}>Resolve conflict</button> : null}
+                    </div>
+                ) : null}
+                {conflictOpen && externalConflict ? (
+                    <Modal
+                        icon="warning"
+                        title="External changes detected"
+                        size="sm"
+                        onClose={() => { if (!conflictBusy) setConflictOpen(false); }}
+                        footer={(
+                            <>
+                                <button className="btn" data-testid="sql-conflict-reload" onClick={() => { void reloadFromDisk(); }} disabled={conflictBusy}>Reload from Disk</button>
+                                <button className="btn btn-primary" data-testid="sql-conflict-overwrite" onClick={() => { void overwriteDisk(); }} disabled={conflictBusy}>Overwrite Disk</button>
+                            </>
+                        )}
+                    >
+                        <div className="flex flex-col gap-[var(--s3)] px-[var(--s7)] py-[var(--s6)]">
+                            <div>The SQL file changed outside Muxy. Choose which version to keep.</div>
+                            {conflictActionError ? <div className="error-box" data-testid="sql-conflict-error" role="alert">{conflictActionError}</div> : null}
+                        </div>
+                    </Modal>
+                ) : null}
                 <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
                     <SqlEditorView
                         engine={session.conn.engine}
@@ -174,26 +228,14 @@ export function QueryView({ session, workspaceId, setStatus, queryHooksRef }) {
                         initialDoc={draft}
                         viewRef={editorRef}
                         onDocChange={(doc) => setDraftText(doc)}
-                        onRun={() => runRef.current("cursor")}
-                        onRunAll={() => runRef.current("all")}
+                        onRun={() => runRef.current()}
                     />
                 </div>
                 <div className="min-h-0 border-t" style={{ borderColor: "var(--muxy-border)", flex: "0 0 45%" }}>
-                    <Results results={results?.results} error={results?.error} />
+                    <Results results={qs.results?.results} error={qs.queryError} />
                 </div>
             </div>
-            {panel === "history" ? (
-                <HistoryPanel session={session} refreshToken={historyToken} onPick={(sql) => insertSql(editorRef.current, sql)} />
-            ) : null}
-            {panel === "saved" ? (
-                <div className="w-[var(--side-panel-width)] flex-shrink-0 border-l" style={{ borderColor: "var(--muxy-border)" }}>
-                    <SavedPanel
-                        session={session}
-                        onPick={(sql) => insertSql(editorRef.current, sql)}
-                        getCurrentSql={() => selectedSql(editorRef.current) ?? (editorRef.current ? editorRef.current.state.doc.toString() : "")}
-                    />
-                </div>
-            ) : null}
+            {exportOpen ? <ExportMenuModal onClose={() => setExportOpen(false)} onExport={exportResults} /> : null}
         </div>
     );
 }

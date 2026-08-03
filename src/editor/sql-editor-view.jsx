@@ -1,10 +1,10 @@
 import { useEffect, useRef } from "react";
-import { createSqlEditor } from "./sql-editor.js";
+import { createSqlEditor, syncSqlEditorDocument } from "./sql-editor.js";
 
-export function SqlEditorView({ engine, schema, initialDoc, viewRef, onDocChange, onRun, onRunAll }) {
+export function SqlEditorView({ engine, schema, initialDoc, viewRef, onDocChange, onRun }) {
     const hostRef = useRef(null);
-    const callbacks = useRef({ onDocChange, onRun, onRunAll });
-    callbacks.current = { onDocChange, onRun, onRunAll };
+    const callbacks = useRef({ onDocChange, onRun });
+    callbacks.current = { onDocChange, onRun };
 
     useEffect(() => {
         const view = createSqlEditor(hostRef.current, {
@@ -12,7 +12,6 @@ export function SqlEditorView({ engine, schema, initialDoc, viewRef, onDocChange
             doc: initialDoc,
             schema,
             onRun: () => callbacks.current.onRun?.(),
-            onRunAll: () => callbacks.current.onRunAll?.(),
             onDocChange: (doc) => callbacks.current.onDocChange?.(doc),
         });
         viewRef.current = view;
@@ -22,6 +21,10 @@ export function SqlEditorView({ engine, schema, initialDoc, viewRef, onDocChange
             viewRef.current = null;
         };
     }, []);
+
+    useEffect(() => {
+        syncSqlEditorDocument(viewRef.current, initialDoc);
+    }, [initialDoc, viewRef]);
 
     return <div ref={hostRef} className="flex min-h-0 flex-1 flex-col" />;
 }

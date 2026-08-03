@@ -1,6 +1,7 @@
 import { clearChanges } from "../grid/pending-changes.js";
-import { qualifiedName } from "../lib/sql/quote.js";
+import { createSqlFile, ensureConsoleFile, getSqlNamespace, listSqlFiles, readSqlFile, renameSqlFile, saveSqlFile, trashSqlFile, validateFileName } from "../lib/sql-files.js";
 import { clearDataRuntime, clearDataRuntimes, dataRuntimeFor, nextDataRequest, refreshDataRuntime } from "./data-runtime.js";
+import { currentDatabase, hasDatabase } from "./state.js";
 import { initialWorkspaceState, objectCacheKey, pendingChangeCountFor, sameObjectRef, workspaceReducer } from "./workspace-state.js";
 
 export const WORKSPACE_VIEWS = Object.freeze(["data", "structure", "query"]);
@@ -21,6 +22,16 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
     session.tableInfoErrors = session.tableInfoErrors || new Map();
     session.columnFocusToken = session.columnFocusToken || 0;
     session.columnFocus = session.columnFocus || null;
+    session.sqlRegistry = session.sqlRegistry || { order: [], activeId: null, byId: {} };
+    session.sqlState = session.sqlState || new Map();
+    session.sqlOwners = session.sqlOwners || new Map();
+    session.sqlTabIdCounter = session.sqlTabIdCounter || 0;
+    session.sqlTabGenerationCounter = session.sqlTabGenerationCounter || 0;
+    session.sqlFiles = session.sqlFiles || [];
+    session.consoleToken = session.consoleToken || 0;
+    session.consoleEpoch = session.consoleEpoch || 0;
+    session.consoleState = session.consoleState || { phase: "missing", files: [], error: null };
+    session.surface = session.surface || "console";
     let registryRevision = 0;
 
     const emit = () => {
@@ -40,24 +51,46 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         session.structureCache?.delete(key);
         session.queryState?.delete(key);
     };
-    const clearWindowRuntime = () => {
+    const clearSqlSaveTimers = () => {
+        for (const owner of session.sqlOwners.values()) {
+            if (owner.saveTimer)
+                clearTimeout(owner.saveTimer);
+        }
+    };
+    const clearSqlRuntime = () => {
+        clearSqlSaveTimers();
+        session.sqlState.clear();
+        session.sqlOwners.clear();
+        session.sqlRegistry = { order: [], activeId: null, byId: {} };
+        session.sqlFiles = [];
+        session.sqlNamespace = null;
+    };
+    const clearWindowRuntime = ({ clearSql = true } = {}) => {
         clearDataRuntimes(session);
         session.structureCache?.clear();
         session.infoCache?.clear();
         session.tableInfoRequests.clear();
         session.tableInfoErrors.clear();
         session.queryState?.clear();
+        if (clearSql) {
+            clearSqlRuntime();
+            session.consoleEpoch += 1;
+        }
         session.columnFocus = null;
         commit({ type: "CLEAR_ALL" });
         adapters.notifyPending?.();
         adapters.notifyData?.();
         adapters.notifyColumnFocus?.(null);
     };
-    const clearScopeRuntime = () => {
+    const clearScopeRuntime = ({ clearSql = true } = {}) => {
         session.tables = [];
         session.columnsMap = {};
         session.catalogError = null;
-        clearWindowRuntime();
+        if (clearSql) {
+            session.surface = "console";
+            session.consoleState = { phase: "missing", files: [], error: null };
+        }
+        clearWindowRuntime({ clearSql });
         adapters.notifyScope?.();
         adapters.notifyCatalog?.();
     };
@@ -72,6 +105,156 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         adapters.notifyData?.();
         return { outcome: "closed", activeId: session.registry.activeId };
     };
+    const sqlEntryById = (sqlTabId) => session.sqlRegistry.byId[sqlTabId] || null;
+    const sqlStateFor = (sqlTabId) => {
+        const entry = sqlEntryById(sqlTabId);
+        return entry ? session.sqlState.get(entry.key) : null;
+    };
+    const filesApi = () => adapters.sqlFiles || { getNamespace: getSqlNamespace, ensureConsoleFile, listSqlFiles, createSqlFile, readSqlFile, renameSqlFile, saveSqlFile, trashSqlFile };
+    const sortFiles = (files) => [...files].sort((left, right) => {
+        if (left.reserved !== right.reserved)
+            return left.reserved ? -1 : 1;
+        return left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
+    });
+    const setSqlFiles = (files) => {
+        session.sqlFiles = sortFiles(files);
+        session.consoleState = { ...session.consoleState, files: session.sqlFiles };
+    };
+    const emptyVersion = (file) => ({
+        sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        size: 0,
+        mtimeMs: file.mtimeMs,
+    });
+    const createSqlTab = (file, content, observedVersion) => {
+        const id = ++session.sqlTabIdCounter;
+        const generation = ++session.sqlTabGenerationCounter;
+        const key = `sql:${id}`;
+        session.sqlState.set(key, { sql: content, results: null, exportContext: null, queryRunning: false, queryError: null, observedVersion, dirty: false, saveStatus: "clean", saveFailed: false, saveError: null, conflictStatus: "none", conflictVersion: null, externalConflict: false });
+        session.sqlOwners.set(key, { queryRequest: 0, saveTimer: null, savePromise: null, savePending: false });
+        session.sqlRegistry = {
+            order: [...session.sqlRegistry.order, id],
+            activeId: id,
+            byId: { ...session.sqlRegistry.byId, [id]: { id, key, generation, kind: "sql", name: file.name, title: file.name, path: file.path, reserved: Boolean(file.reserved), observedVersion, dirty: false, saveStatus: "clean", saveFailed: false, saveError: null, conflictStatus: "none", conflictVersion: null, externalConflict: false } },
+        };
+        session.surface = "console";
+        emit();
+        return { sqlTabId: id, created: true, activeId: id };
+    };
+    const updateSqlEntry = (sqlTabId, changes) => {
+        const entry = sqlEntryById(sqlTabId);
+        if (!entry)
+            return null;
+        session.sqlRegistry = { ...session.sqlRegistry, byId: { ...session.sqlRegistry.byId, [sqlTabId]: { ...entry, ...changes } } };
+        return session.sqlRegistry.byId[sqlTabId];
+    };
+    const markSqlConflict = async (sqlTabId, owner, error) => {
+        const entry = sqlEntryById(sqlTabId);
+        const state = sqlStateFor(sqlTabId);
+        if (!entry || !state || session.sqlOwners.get(entry.key) !== owner)
+            return;
+        const api = filesApi();
+        const namespace = session.sqlNamespace || await api.getNamespace({ conn: session.conn, database: currentDatabase(session) });
+        const conflictVersion = error.conflictVersion || (await api.readSqlFile(namespace, entry.name)).version;
+        state.dirty = true;
+        state.saveStatus = "clean";
+        state.saveFailed = false;
+        state.saveError = error;
+        state.conflictStatus = "externalConflict";
+        state.conflictVersion = conflictVersion;
+        state.externalConflict = true;
+        updateSqlEntry(sqlTabId, { dirty: true, saveStatus: "clean", saveFailed: false, saveError: error, conflictStatus: "externalConflict", conflictVersion, externalConflict: true });
+        emit();
+    };
+    const flushSqlDraft = async (sqlTabId, owner) => {
+        if (owner.savePromise) {
+            owner.savePending = true;
+            return;
+        }
+        const entry = sqlEntryById(sqlTabId);
+        const state = sqlStateFor(sqlTabId);
+        if (!entry || !state || session.sqlOwners.get(entry.key) !== owner)
+            return;
+        const content = state.sql;
+        const expectedVersion = state.observedVersion;
+        owner.savePromise = (async () => {
+            try {
+                const api = filesApi();
+                const namespace = session.sqlNamespace || await api.getNamespace({ conn: session.conn, database: currentDatabase(session) });
+                const result = await api.saveSqlFile(namespace, entry.name, content, expectedVersion);
+                if (session.sqlOwners.get(entry.key) !== owner)
+                    return;
+                const currentState = session.sqlState.get(entry.key);
+                const dirty = currentState.sql !== content;
+                currentState.observedVersion = result.version;
+                currentState.dirty = dirty;
+                currentState.saveStatus = dirty ? "saving" : "clean";
+                currentState.saveFailed = false;
+                currentState.saveError = null;
+                currentState.conflictStatus = "none";
+                currentState.conflictVersion = null;
+                currentState.externalConflict = false;
+                updateSqlEntry(sqlTabId, { observedVersion: result.version, dirty, saveStatus: currentState.saveStatus, saveFailed: false, saveError: null, conflictStatus: "none", conflictVersion: null, externalConflict: false });
+                emit();
+            }
+            catch (error) {
+                if (session.sqlOwners.get(entry.key) !== owner)
+                    return;
+                const currentState = session.sqlState.get(entry.key);
+                const externalConflict = error?.code === "FILE_VERSION_CONFLICT";
+                if (externalConflict) {
+                    await markSqlConflict(sqlTabId, owner, error);
+                    return;
+                }
+                currentState.dirty = true;
+                currentState.saveStatus = "saveFailed";
+                currentState.saveFailed = true;
+                currentState.saveError = error;
+                currentState.conflictStatus = externalConflict ? "externalConflict" : currentState.conflictStatus;
+                currentState.externalConflict = externalConflict || currentState.externalConflict;
+                updateSqlEntry(sqlTabId, { dirty: true, saveStatus: currentState.saveStatus, saveFailed: currentState.saveFailed, saveError: error, conflictStatus: currentState.conflictStatus, externalConflict: currentState.externalConflict });
+                emit();
+            }
+        })();
+        await owner.savePromise;
+        owner.savePromise = null;
+        const currentState = session.sqlState.get(entry.key);
+        if (session.sqlOwners.get(entry.key) === owner && !currentState?.externalConflict && (owner.savePending || currentState?.sql !== content)) {
+            owner.savePending = false;
+            void flushSqlDraft(sqlTabId, owner);
+        }
+    };
+    const scheduleSqlDraft = (sqlTabId, owner) => {
+        if (owner.saveTimer)
+            clearTimeout(owner.saveTimer);
+        owner.saveTimer = setTimeout(() => {
+            owner.saveTimer = null;
+            void flushSqlDraft(sqlTabId, owner);
+        }, 500);
+    };
+    const sqlNeedsUnsavedGuard = (entry) => {
+        const state = session.sqlState.get(entry.key);
+        return Boolean(state?.dirty || state?.saveFailed || state?.externalConflict || entry.dirty || entry.saveFailed || entry.externalConflict);
+    };
+    const confirmSqlAction = (entry, action) => {
+        if (!sqlNeedsUnsavedGuard(entry))
+            return null;
+        return (async () => {
+            let choice;
+            try {
+                choice = await adapters.confirm?.({
+                    title: "Discard unsaved changes?",
+                    message: `${entry.name} has unsaved changes that will be lost.`,
+                    buttons: [action, "Cancel"],
+                    cancel: "Cancel",
+                    style: "warning",
+                });
+            }
+            catch {
+                return { error: "CONFIRMATION_FAILED" };
+            }
+            return choice === action ? null : { outcome: "cancelled" };
+        })();
+    };
 
     const coordinator = {
         adapters,
@@ -82,6 +265,296 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
 
         getActive() {
             return entryById(session.registry.activeId);
+        },
+
+        getActiveSql() {
+            return sqlEntryById(session.sqlRegistry.activeId);
+        },
+
+        enterConsole() {
+            session.surface = "console";
+            const token = ++session.consoleToken;
+            if (!hasDatabase(session)) {
+                session.consoleState = { phase: "missing", files: [], error: null };
+                emit();
+                return Promise.resolve({ error: "DATABASE_REQUIRED" });
+            }
+            session.consoleState = { phase: "loading", files: session.consoleState.files || [], error: null };
+            emit();
+            const api = filesApi();
+            return (async () => {
+                try {
+                    const namespace = await api.getNamespace({ conn: session.conn, database: currentDatabase(session) });
+                    await api.ensureConsoleFile(namespace);
+                    const files = await api.listSqlFiles(namespace);
+                    if (session.consoleToken !== token)
+                        return { stale: true };
+                    session.sqlNamespace = namespace;
+                    setSqlFiles(files);
+                    session.consoleState = { phase: "ready", files, error: null };
+                    emit();
+                    return { namespace, files };
+                }
+                catch (error) {
+                    if (session.consoleToken === token) {
+                        session.consoleState = { phase: "error", files: session.consoleState.files || [], error };
+                        emit();
+                    }
+                    throw error;
+                }
+            })();
+        },
+
+        retryConsole() {
+            return coordinator.enterConsole();
+        },
+
+        newQuery() {
+            if (!hasDatabase(session))
+                return { error: "DATABASE_REQUIRED" };
+            return coordinator.createAndOpenFile("New Query");
+        },
+
+        async createAndOpenFile(rawName) {
+            if (!hasDatabase(session))
+                return { error: "DATABASE_REQUIRED" };
+            const name = validateFileName(rawName);
+            const api = filesApi();
+            const namespace = session.sqlNamespace || await api.getNamespace({ conn: session.conn, database: currentDatabase(session) });
+            const file = await api.createSqlFile(namespace, name);
+            setSqlFiles([...session.sqlFiles.filter((item) => item.name !== file.name), file]);
+            return createSqlTab(file, "", emptyVersion(file));
+        },
+
+        async openSqlFile(rawName) {
+            if (!hasDatabase(session))
+                return { error: "DATABASE_REQUIRED" };
+            const name = validateFileName(rawName, { allowReserved: true });
+            const existingId = session.sqlRegistry.order.find((id) => session.sqlRegistry.byId[id]?.name === name);
+            if (existingId !== undefined) {
+                session.surface = "console";
+                session.sqlRegistry = { ...session.sqlRegistry, activeId: existingId };
+                emit();
+                return { sqlTabId: existingId, activated: true, created: false, activeId: existingId };
+            }
+            const file = session.sqlFiles.find((item) => item.name === name);
+            if (!file)
+                return { error: "FILE_NOT_FOUND" };
+            const api = filesApi();
+            const namespace = session.sqlNamespace || await api.getNamespace({ conn: session.conn, database: currentDatabase(session) });
+            const read = await api.readSqlFile(namespace, name);
+            return createSqlTab(file, read.content, read.version);
+        },
+
+        updateSqlDraft(sqlTabId, content) {
+            const entry = sqlEntryById(sqlTabId);
+            const state = sqlStateFor(sqlTabId);
+            if (!entry || !state)
+                return { error: "QUERY_TAB_REQUIRED" };
+            state.sql = content;
+            state.dirty = true;
+            state.saveStatus = state.externalConflict ? "clean" : "saving";
+            state.saveFailed = false;
+            if (!state.externalConflict)
+                state.saveError = null;
+            const owner = session.sqlOwners.get(entry.key);
+            updateSqlEntry(sqlTabId, { dirty: true, saveStatus: state.saveStatus, saveFailed: false, saveError: state.saveError });
+            if (!state.externalConflict)
+                scheduleSqlDraft(sqlTabId, owner);
+            emit();
+            return { sqlTabId, dirty: true };
+        },
+
+        async reloadSqlFile(sqlTabId) {
+            const entry = sqlEntryById(sqlTabId);
+            const state = sqlStateFor(sqlTabId);
+            const owner = entry && session.sqlOwners.get(entry.key);
+            if (!entry || !state || !owner)
+                return { error: "QUERY_TAB_REQUIRED" };
+            if (owner.saveTimer) {
+                clearTimeout(owner.saveTimer);
+                owner.saveTimer = null;
+            }
+            owner.savePending = false;
+            const api = filesApi();
+            const namespace = session.sqlNamespace || await api.getNamespace({ conn: session.conn, database: currentDatabase(session) });
+            const read = await api.readSqlFile(namespace, entry.name);
+            state.sql = read.content;
+            state.observedVersion = read.version;
+            state.dirty = false;
+            state.saveStatus = "clean";
+            state.saveFailed = false;
+            state.saveError = null;
+            state.conflictStatus = "none";
+            state.conflictVersion = null;
+            state.externalConflict = false;
+            updateSqlEntry(sqlTabId, { observedVersion: read.version, dirty: false, saveStatus: "clean", saveFailed: false, saveError: null, conflictStatus: "none", conflictVersion: null, externalConflict: false });
+            emit();
+            return { sqlTabId, content: read.content, version: read.version, reloaded: true, dirty: false, externalConflict: false };
+        },
+
+        async overwriteSqlFile(sqlTabId, conflictVersion) {
+            const entry = sqlEntryById(sqlTabId);
+            const state = sqlStateFor(sqlTabId);
+            const owner = entry && session.sqlOwners.get(entry.key);
+            if (!entry || !state || !owner)
+                return { error: "QUERY_TAB_REQUIRED" };
+            if (!state.externalConflict)
+                return { error: "FILE_CONFLICT_REQUIRED" };
+            const expectedVersion = conflictVersion || state.conflictVersion;
+            if (!expectedVersion)
+                return { error: "FILE_VERSION_REQUIRED" };
+            state.saveStatus = "saving";
+            state.saveError = null;
+            updateSqlEntry(sqlTabId, { saveStatus: "saving", saveError: null });
+            emit();
+            try {
+                const api = filesApi();
+                const namespace = session.sqlNamespace || await api.getNamespace({ conn: session.conn, database: currentDatabase(session) });
+                const result = await api.saveSqlFile(namespace, entry.name, state.sql, expectedVersion);
+                state.observedVersion = result.version;
+                state.dirty = false;
+                state.saveStatus = "clean";
+                state.saveFailed = false;
+                state.saveError = null;
+                state.conflictStatus = "none";
+                state.conflictVersion = null;
+                state.externalConflict = false;
+                updateSqlEntry(sqlTabId, { observedVersion: result.version, dirty: false, saveStatus: "clean", saveFailed: false, saveError: null, conflictStatus: "none", conflictVersion: null, externalConflict: false });
+                emit();
+                return { sqlTabId, version: result.version, overwritten: true, dirty: false, externalConflict: false };
+            }
+            catch (error) {
+                if (error?.code === "FILE_VERSION_CONFLICT")
+                    await markSqlConflict(sqlTabId, owner, error);
+                else {
+                    state.saveStatus = "saveFailed";
+                    state.saveError = error;
+                    updateSqlEntry(sqlTabId, { saveStatus: "saveFailed", saveError: error });
+                    emit();
+                }
+                throw error;
+            }
+        },
+
+        async retrySqlSave(sqlTabId) {
+            const entry = sqlEntryById(sqlTabId);
+            const state = sqlStateFor(sqlTabId);
+            const owner = entry && session.sqlOwners.get(entry.key);
+            if (!entry || !state || !owner)
+                return { error: "QUERY_TAB_REQUIRED" };
+            if (owner.saveTimer) {
+                clearTimeout(owner.saveTimer);
+                owner.saveTimer = null;
+            }
+            owner.savePending = false;
+            state.saveStatus = "saving";
+            state.saveFailed = false;
+            state.saveError = null;
+            updateSqlEntry(sqlTabId, { saveStatus: "saving", saveFailed: false, saveError: null });
+            emit();
+            await flushSqlDraft(sqlTabId, owner);
+            const current = sqlStateFor(sqlTabId);
+            return { sqlTabId, dirty: current.dirty, saveFailed: current.saveFailed, externalConflict: current.externalConflict };
+        },
+
+        async renameSqlFile(sqlTabId, rawName, expectedVersion) {
+            if (!hasDatabase(session))
+                return { error: "DATABASE_REQUIRED" };
+            const entry = sqlEntryById(sqlTabId);
+            if (!entry)
+                return { error: "QUERY_TAB_REQUIRED" };
+            if (entry.reserved || entry.name?.toLowerCase() === "console.sql")
+                return { error: "FILE_RESERVED" };
+            const name = validateFileName(rawName);
+            const api = filesApi();
+            const namespace = session.sqlNamespace || await api.getNamespace({ conn: session.conn, database: currentDatabase(session) });
+            const result = await api.renameSqlFile(namespace, entry.name, name, expectedVersion || entry.observedVersion);
+            const file = result.file;
+            const nextEntry = { ...entry, name: file.name, title: file.name, path: file.path, observedVersion: result.version };
+            session.sqlRegistry = { ...session.sqlRegistry, byId: { ...session.sqlRegistry.byId, [sqlTabId]: nextEntry } };
+            const state = session.sqlState.get(entry.key);
+            if (state)
+                state.observedVersion = result.version;
+            setSqlFiles([...session.sqlFiles.filter((item) => item.name !== entry.name), file]);
+            emit();
+            return { sqlTabId, name: file.name, file, renamed: true };
+        },
+
+        async trashSqlFile(sqlTabId) {
+            if (!hasDatabase(session))
+                return { error: "DATABASE_REQUIRED" };
+            const entry = sqlEntryById(sqlTabId);
+            if (!entry)
+                return { error: "QUERY_TAB_REQUIRED" };
+            if (entry.reserved || entry.name?.toLowerCase() === "console.sql")
+                return { error: "FILE_RESERVED" };
+            const unsaved = confirmSqlAction(entry, "Delete");
+            if (unsaved) {
+                const result = await unsaved;
+                if (result)
+                    return result;
+                if (sqlEntryById(sqlTabId) !== entry)
+                    return { error: "QUERY_TAB_REQUIRED" };
+            }
+            let choice;
+            try {
+                choice = await adapters.confirm?.({
+                    title: "Move SQL file to Trash?",
+                    message: `Move ${entry.name} to the Finder Trash?`,
+                    buttons: ["Delete", "Cancel"],
+                    cancel: "Cancel",
+                    style: "warning",
+                });
+            }
+            catch {
+                return { error: "CONFIRMATION_FAILED" };
+            }
+            if (choice !== "Delete")
+                return { outcome: "cancelled" };
+            const api = filesApi();
+            const namespace = session.sqlNamespace || await api.getNamespace({ conn: session.conn, database: currentDatabase(session) });
+            await api.trashSqlFile(namespace, entry.name, entry.observedVersion);
+            setSqlFiles(session.sqlFiles.filter((item) => item.name !== entry.name));
+            const closed = coordinator.closeSqlNow(sqlTabId);
+            return { outcome: "trashed", sqlTabId, activeId: closed.activeId };
+        },
+
+        activateSql(sqlTabId) {
+            if (!sqlEntryById(sqlTabId))
+                return { error: "QUERY_TAB_REQUIRED" };
+            session.sqlRegistry = { ...session.sqlRegistry, activeId: sqlTabId };
+            session.surface = "console";
+            emit();
+            return { activeId: sqlTabId };
+        },
+
+        closeSql(sqlTabId) {
+            const entry = sqlEntryById(sqlTabId);
+            if (!entry)
+                return { error: "QUERY_TAB_REQUIRED" };
+            const guard = confirmSqlAction(entry, "Close");
+            if (guard)
+                return guard.then((result) => result || coordinator.closeSqlNow(sqlTabId));
+            return coordinator.closeSqlNow(sqlTabId);
+        },
+
+        closeSqlNow(sqlTabId) {
+            const entry = sqlEntryById(sqlTabId);
+            if (!entry)
+                return { error: "QUERY_TAB_REQUIRED" };
+            const index = session.sqlRegistry.order.indexOf(sqlTabId);
+            const order = session.sqlRegistry.order.filter((id) => id !== sqlTabId);
+            const nextActive = session.sqlRegistry.activeId === sqlTabId ? order[Math.max(0, index - 1)] || order[0] || null : session.sqlRegistry.activeId;
+            const { [sqlTabId]: _, ...byId } = session.sqlRegistry.byId;
+            const owner = session.sqlOwners.get(entry.key);
+            if (owner?.saveTimer)
+                clearTimeout(owner.saveTimer);
+            session.sqlRegistry = { order, activeId: nextActive, byId };
+            session.sqlState.delete(entry.key);
+            session.sqlOwners.delete(entry.key);
+            emit();
+            return { activeId: nextActive };
         },
 
         loadTableInfo(objectRef, operationCtx = captureOperationCtx()) {
@@ -119,6 +592,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             const key = objectCacheKey(objectRef);
             const existingId = session.registry.order.find((id) => session.registry.byId[id]?.key === key);
             if (existingId !== undefined) {
+                session.surface = "object";
                 commit({ type: "ACTIVATE", id: existingId });
                 return { workspaceId: existingId, created: false, activeId: session.registry.activeId };
             }
@@ -127,7 +601,8 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             dataRuntimeFor(session, key, objectRef, undefined, workspaceId, generation);
             if (!(session.queryState instanceof Map))
                 session.queryState = new Map();
-            session.queryState.set(key, { sql: `SELECT * FROM ${qualifiedName(session.conn.engine, objectRef)}`, results: null, exportContext: null });
+            session.queryState.set(key, { sql: "", results: null, exportContext: null, queryRunning: false, queryError: null });
+            session.surface = "object";
             commit({ type: "OPEN", id: workspaceId, key, generation, ref: objectRef });
             return { workspaceId, created: true, activeId: session.registry.activeId };
         },
@@ -135,6 +610,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         setActive(workspaceId) {
             if (!entryById(workspaceId))
                 return STALE_WORKSPACE;
+            session.surface = "object";
             commit({ type: "ACTIVATE", id: workspaceId });
             return { activeId: session.registry.activeId };
         },
@@ -258,12 +734,15 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
                     totalChanges += count;
                 }
             }
-            if (dirtyWorkspaceCount > 0) {
+            const dirtySqlTabCount = session.sqlRegistry.order.filter((sqlTabId) => sqlNeedsUnsavedGuard(sqlEntryById(sqlTabId))).length;
+            if (dirtyWorkspaceCount > 0 || dirtySqlTabCount > 0) {
                 let choice;
                 try {
+                    const changeMessage = totalChanges ? `${totalChanges} unapplied change${totalChanges === 1 ? "" : "s"}` : "";
+                    const sqlMessage = dirtySqlTabCount > 0 ? `${dirtySqlTabCount} SQL tab${dirtySqlTabCount === 1 ? "" : "s"} with unsaved changes` : "";
                     choice = await adapters.confirm?.({
                         title: "Discard pending changes?",
-                        message: `${totalChanges} unapplied change${totalChanges === 1 ? "" : "s"} will be lost when changing scope.`,
+                        message: `${changeMessage}${changeMessage && sqlMessage ? " " : ""}${sqlMessage} will be lost when changing scope.`,
                         buttons: ["Change Scope", "Cancel"],
                         cancel: "Cancel",
                         style: "warning",
@@ -277,12 +756,20 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             }
             if (session.scopeRequestToken !== scopeRequestToken)
                 return { outcome: "cancelled", stale: true };
+            const databaseChanged = target.database !== session.ctx.database;
             session.ctx.database = target.database;
             session.ctx.schema = target.schema;
             session.scopeGeneration = (session.scopeGeneration || 0) + 1;
-            clearScopeRuntime();
+            clearScopeRuntime({ clearSql: databaseChanged });
+            const consoleApi = filesApi();
+            const reloadConsole = databaseChanged
+                && (session.consoleState.phase !== "missing" || session.sqlNamespace || adapters.sqlFiles)
+                && typeof consoleApi.getNamespace === "function"
+                && typeof consoleApi.listSqlFiles === "function";
+            const consoleLoad = reloadConsole ? coordinator.enterConsole() : null;
             const catalog = await coordinator.initiateCatalogLoad();
-            return { outcome: "committed", scopeEpoch: session.scopeGeneration, catalog };
+            const console = consoleLoad ? await consoleLoad : null;
+            return { outcome: "committed", scopeEpoch: session.scopeGeneration, catalog, ...(console ? { console, files: session.sqlFiles } : {}) };
         },
 
         async initiateCatalogLoad() {
@@ -345,6 +832,21 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         },
 
         initiateQueryExecute(workspaceId, sql, mode) {
+            if (workspaceId == null)
+                return { error: "QUERY_TAB_REQUIRED" };
+            const sqlEntry = sqlEntryById(workspaceId);
+            if (sqlEntry) {
+                if (!QUERY_MODES.includes(mode))
+                    return { error: "INVALID_QUERY_MODE" };
+                if (!sql?.trim())
+                    return { error: "INVALID_SQL" };
+                const owner = session.sqlOwners.get(sqlEntry.key);
+                owner.queryRequest = (owner.queryRequest || 0) + 1;
+                const state = session.sqlState.get(sqlEntry.key);
+                state.queryRunning = true;
+                emit();
+                return { operationCtx: captureOperationCtx(), tabId: workspaceId, tabGeneration: sqlEntry.generation, consoleEpoch: session.consoleEpoch, sqlTabId: workspaceId, sqlKey: sqlEntry.key, requestToken: owner.queryRequest, queryToken: owner.queryRequest, sql, mode };
+            }
             const entry = entryById(workspaceId);
             if (!entry)
                 return STALE_WORKSPACE;
@@ -354,7 +856,10 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
                 return { error: "INVALID_SQL" };
             const owner = session.workspaceOwners.get(entry.key);
             owner.queryRequest = (owner.queryRequest || 0) + 1;
-            return { operationCtx: captureOperationCtx(), objectRef: entry.ref, ownership: ownershipFor(entry), queryToken: owner.queryRequest, sql, mode };
+            const state = session.queryState.get(entry.key);
+            state.queryRunning = true;
+            emit();
+            return { operationCtx: captureOperationCtx(), objectRef: entry.ref, ownership: ownershipFor(entry), requestToken: owner.queryRequest, queryToken: owner.queryRequest, sql, mode };
         },
 
         initiateStructureRead(workspaceId) {
@@ -398,15 +903,18 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
                     totalChanges += count;
                 }
             }
-            if (!dirtyWorkspaceCount) {
+            const dirtySqlTabCount = session.sqlRegistry.order.filter((sqlTabId) => sqlNeedsUnsavedGuard(sqlEntryById(sqlTabId))).length;
+            if (!dirtyWorkspaceCount && !dirtySqlTabCount) {
                 clearWindowRuntime();
                 return { allowClose: true, dirtyWorkspaceCount: 0 };
             }
             let choice;
             try {
+                const closeMessage = totalChanges ? `${totalChanges} unapplied change${totalChanges === 1 ? "" : "s"}` : "";
+                const sqlMessage = dirtySqlTabCount > 0 ? `${dirtySqlTabCount} SQL tab${dirtySqlTabCount === 1 ? "" : "s"} with unsaved changes` : "";
                 choice = await adapters.confirm?.({
                     title: "Discard pending changes?",
-                    message: `${totalChanges} unapplied change${totalChanges === 1 ? "" : "s"} will be lost.`,
+                    message: `${closeMessage}${closeMessage && sqlMessage ? " " : ""}${sqlMessage} will be lost.`,
                     buttons: ["Discard & Close", "Cancel"],
                     cancel: "Cancel",
                     style: "warning",
@@ -418,7 +926,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             const allowClose = choice === "Discard & Close";
             if (allowClose)
                 clearWindowRuntime();
-            return { allowClose, dirtyWorkspaceCount };
+            return dirtySqlTabCount > 0 ? { allowClose, dirtyWorkspaceCount, dirtySqlTabCount } : { allowClose, dirtyWorkspaceCount };
         },
     };
     session.coordinator = coordinator;

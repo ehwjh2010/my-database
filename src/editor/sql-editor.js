@@ -1,5 +1,5 @@
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection } from "@codemirror/view";
-import { EditorState } from "@codemirror/state";
+import { Annotation, EditorState } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { sql, PostgreSQL, MySQL, MariaSQL, SQLite } from "@codemirror/lang-sql";
 import { acceptCompletion, autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap, pickedCompletion } from "@codemirror/autocomplete";
@@ -7,6 +7,7 @@ import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { muxyTheme } from "./editor-theme.js";
 
 const DIALECTS = { postgres: PostgreSQL, mysql: MySQL, mariadb: MariaSQL, sqlite: SQLite };
+const syncedDocument = Annotation.define();
 const completionSpacing = EditorState.transactionFilter.of((transaction) => {
     if (!transaction.annotation(pickedCompletion))
         return transaction;
@@ -15,7 +16,7 @@ const completionSpacing = EditorState.transactionFilter.of((transaction) => {
     return [transaction, { changes: hasSpace ? undefined : { from: cursor, insert: " " }, selection: { anchor: cursor + 1 }, sequential: true }];
 });
 
-export function createSqlEditor(parent, { engine, doc = "", schema = {}, onRun, onRunAll, onDocChange }) {
+export function createSqlEditor(parent, { engine, doc = "", schema = {}, onRun, onDocChange }) {
     const view = new EditorView({
         parent,
         state: EditorState.create({
@@ -32,7 +33,6 @@ export function createSqlEditor(parent, { engine, doc = "", schema = {}, onRun, 
                 completionSpacing,
                 keymap.of([
                     { key: "Mod-Enter", run: () => (onRun ? (onRun(), true) : false) },
-                    { key: "Shift-Mod-Enter", run: () => (onRunAll ? (onRunAll(), true) : false) },
                     ...closeBracketsKeymap,
                     ...defaultKeymap,
                     ...historyKeymap,
@@ -44,7 +44,7 @@ export function createSqlEditor(parent, { engine, doc = "", schema = {}, onRun, 
                 sql({ dialect: DIALECTS[engine] || SQLite, schema, upperCaseKeywords: true }),
                 muxyTheme(),
                 EditorView.updateListener.of((update) => {
-                    if (update.docChanged && onDocChange)
+                    if (update.docChanged && onDocChange && !update.transactions.some((transaction) => transaction.annotation(syncedDocument)))
                         onDocChange(update.state.doc.toString());
                 }),
             ],
@@ -53,11 +53,25 @@ export function createSqlEditor(parent, { engine, doc = "", schema = {}, onRun, 
     return view;
 }
 
+export function syncSqlEditorDocument(view, doc) {
+    if (!view || view.state.doc.toString() === doc)
+        return false;
+    view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: doc },
+        annotations: syncedDocument.of(true),
+    });
+    return true;
+}
+
 export function selectedSql(view) {
     const range = view.state.selection.main;
     if (!range.empty)
         return view.state.sliceDoc(range.from, range.to);
     return null;
+}
+
+export function querySql(view) {
+    return selectedSql(view)?.trim() || view.state.doc.toString().trim();
 }
 
 export function insertSql(view, text) {

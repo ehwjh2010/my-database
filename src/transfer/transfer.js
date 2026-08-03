@@ -6,7 +6,7 @@ import { writeTextFile } from "../lib/secure-file.js";
 import { copyToClipboard } from "../lib/clipboard.js";
 
 export function resultToInserts(engine, ref, result) {
-    const target = qualifiedName(engine, ref);
+    const target = qualifiedName(engine, ref || { table: "export" });
     const names = result.columns.map((c) => quoteIdent(engine, c.name)).join(", ");
     return result.rows
         .map((row) => `INSERT INTO ${target} (${names}) VALUES (${row.map((v) => quoteLiteral(engine, v)).join(", ")});`)
@@ -31,37 +31,50 @@ async function chooseFile(defaultName) {
     return `${folder}/${name}`;
 }
 
-export async function copyResult(engine, ref, result, format) {
-    let text;
+function exportContent(engine, ref, result, format) {
     if (format === "csv")
-        text = serializeCsv(result.columns, result.rows);
-    else if (format === "json")
-        text = resultToJson(result);
-    else
-        text = resultToInserts(engine, ref, result);
+        return serializeCsv(result.columns, result.rows);
+    if (format === "json")
+        return resultToJson(result);
+    return resultToInserts(engine, ref, result);
+}
+
+function suggestedExportName(name, format, fallback) {
+    const base = name ? name.replace(/\.sql$/i, "") : fallback;
+    return `${base}.${format === "sql" ? "sql" : format}`;
+}
+
+export async function copyResult(engine, ref, result, format) {
+    const text = exportContent(engine, ref, result, format);
     await copyToClipboard(text);
     toast(`Copied as ${format.toUpperCase()}`, "success");
 }
 
-export async function exportResult(engine, ref, result, format) {
-    const ext = format === "sql" ? "sql" : format;
-    const path = await chooseFile(`${ref?.table || "export"}.${ext}`);
+export async function exportResult(engine, ref, result, format, suggestedName) {
+    const path = await chooseFile(suggestedExportName(suggestedName, format, ref?.table || "export"));
     if (!path)
-        return;
-    let content;
-    if (format === "csv")
-        content = serializeCsv(result.columns, result.rows);
-    else if (format === "json")
-        content = resultToJson(result);
-    else
-        content = resultToInserts(engine, ref, result);
+        return { status: "cancelled" };
+    const content = exportContent(engine, ref, result, format);
     try {
         await writeFile(path, content);
         toast(`Exported to ${path}`, "success");
+        return { status: "exported", path };
     }
     catch (error) {
-        toast(error.message, "warning");
+        const message = error?.message || String(error);
+        toast(`EXPORT_FAILED: ${message}`, "warning");
+        return { error: "EXPORT_FAILED", message };
     }
+}
+
+export async function exportActive(session, format) {
+    const tabId = session.sqlRegistry?.activeId;
+    const entry = tabId == null ? null : session.sqlRegistry.byId?.[tabId];
+    const state = entry ? session.sqlState?.get(entry.key) : null;
+    const context = state?.exportContext;
+    if (!context?.result?.columns?.length)
+        return { error: "EXPORT_NOT_AVAILABLE" };
+    return exportResult(session.conn.engine, context.objectRef, context.result, format, entry.name);
 }
 
 async function fetchAll(session, ref) {

@@ -6,11 +6,11 @@ import { ScopeSelects } from "./scope-selects.jsx";
 const VIEWS = [
     { id: "data", label: "Data", icon: "grid" },
     { id: "structure", label: "Structure", icon: "columns" },
-    { id: "query", label: "Console", icon: "code" },
+    { id: "console", label: "Console", icon: "code" },
 ];
 
 export function Topbar() {
-    const { session, view, activeId, setView, changeScope, refreshSchema, schemaEpoch } = useSession();
+    const { session, view, activeId, hasDatabase, setView, changeScope, refreshSchema, schemaEpoch } = useSession();
     const conn = session.conn;
 
     return (
@@ -22,22 +22,22 @@ export function Topbar() {
             </div>
             <ScopeSelects key={schemaEpoch} session={session} onScopeChange={changeScope} />
             <div className="flex-1" />
-            {activeId ? (
-                <div className="seg">
-                    {VIEWS.map((v) => (
-                        <button
-                            key={v.id}
-                            className={view === v.id ? "active" : ""}
-                            data-testid={`workspace-mode-${v.id}`}
-                            aria-pressed={view === v.id}
-                            onClick={() => setView(v.id)}
-                        >
-                            <Icon name={v.icon} />
-                            {v.label}
-                        </button>
-                    ))}
-                </div>
-            ) : null}
+            <div className="seg">
+                {VIEWS.map((v) => (
+                    <button
+                        key={v.id}
+                        className={view === v.id ? "active" : ""}
+                        disabled={v.id === "console" ? !hasDatabase : !activeId}
+                        title={!hasDatabase ? "Select a database first" : v.id !== "console" && !activeId ? "Open a table or view first" : undefined}
+                        data-testid={`workspace-mode-${v.id}`}
+                        aria-pressed={view === v.id}
+                        onClick={() => setView(v.id)}
+                    >
+                        <Icon name={v.icon} />
+                        {v.label}
+                    </button>
+                ))}
+            </div>
             <button className="icon-btn" title="Refresh schema" onClick={refreshSchema}>
                 <Icon name="refresh" />
             </button>
