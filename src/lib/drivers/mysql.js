@@ -158,8 +158,15 @@ export function makeMysqlDriver(engine, binaries) {
         async runQuery(ctx, sql, opts = {}) {
             const statements = splitForEngine(sql, engine);
             const results = [];
-            for (const statement of statements)
-                results.push(...(await runStatement(ctx, statement.sql, opts)));
+            for (const statement of statements) {
+                try {
+                    results.push(...(await runStatement(ctx, statement.sql, opts)));
+                }
+                catch (error) {
+                    error.statement = statement;
+                    throw error;
+                }
+            }
             return results.length ? results : [makeResult({})];
         },
 

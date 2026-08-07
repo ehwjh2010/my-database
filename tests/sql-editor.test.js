@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { querySql, syncSqlEditorDocument } from "../src/editor/sql-editor.js";
+import { queryExecution, querySql, syncSqlEditorDocument } from "../src/editor/sql-editor.js";
 
 test("querySql uses the non-empty selection or the whole document", () => {
     const view = {
@@ -15,6 +15,24 @@ test("querySql uses the non-empty selection or the whole document", () => {
     assert.equal(querySql(view), "SELECT 1");
     view.state.selection.main = { from: 0, to: 0 };
     assert.equal(querySql(view), "SELECT 1;\nSELECT 2;");
+});
+
+test("queryExecution records the SQL offset and execution line", () => {
+    const text = "\n\nSELECT 1;\nSELECT 2;";
+    const view = {
+        state: {
+            selection: { main: { from: 0, to: 0, empty: true } },
+            sliceDoc: (from, to) => text.slice(from, to),
+            doc: {
+                toString: () => text,
+                lineAt: (offset) => ({ number: text.slice(0, offset).split("\n").length }),
+            },
+        },
+    };
+
+    assert.deepEqual(queryExecution(view, "sqlite"), { sql: "SELECT 1;\nSELECT 2;", range: { line: 3, from: 2 } });
+    view.state.selection.main = { from: 11, to: 21, empty: false };
+    assert.deepEqual(queryExecution(view, "sqlite"), { sql: "SELECT 2;", range: { line: 3, from: 12 } });
 });
 
 test("syncSqlEditorDocument replaces a stale editor document once", () => {

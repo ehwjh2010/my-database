@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../ui/icon.jsx";
 import { Modal } from "../ui/modal.jsx";
-import { querySql } from "./sql-editor.js";
+import { queryExecution } from "./sql-editor.js";
+import { queryErrorDiagnostic } from "../lib/sql/error-diagnostic.js";
 import { exportActive } from "../transfer/transfer.js";
 import { ExportMenuModal } from "../transfer/transfer-menu.jsx";
 import { SqlEditorView } from "./sql-editor-view.jsx";
 import { Results } from "./results.jsx";
-import { commitQueryError, commitQueryResult, isCurrentQueryRequest } from "../workbench/query-runtime.js";
+import { commitQueryError, commitQueryResult } from "../workbench/query-runtime.js";
 
 export function schemaForCompletion(session) {
     const schema = {};
@@ -59,7 +60,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
         : session.surface === "object" && session.registry.activeId === workspaceId;
 
     const currentStatement = () => {
-        return editorRef.current ? querySql(editorRef.current) : "";
+        return editorRef.current ? queryExecution(editorRef.current, session.conn.engine) : null;
     };
 
     const setDraftText = useCallback((sql) => {
@@ -73,9 +74,9 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
     }, [isSqlTab, key, session.coordinator, stateMap, tabId]);
 
     const execute = useCallback(
-        async (sql, mode) => {
+        async (execution, mode) => {
             const isExplain = mode === "explain";
-            const snapshot = session.coordinator.initiateQueryExecute(tabId, sql, mode);
+            const snapshot = session.coordinator.initiateQueryExecute(tabId, execution.sql, mode, execution.range, isSqlTab);
             if (snapshot.error) {
                 setStatus("Error");
                 return;
@@ -87,7 +88,8 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                     ? await session.driver.explain(snapshot.operationCtx, snapshot.sql, { timeoutMs: session.timeoutMs })
                     : await session.driver.runQuery(snapshot.operationCtx, snapshot.sql, { timeoutMs: session.timeoutMs });
             } catch (error) {
-                if (!commitQueryError(session, snapshot, isExplain ? "QUERY_EXPLAIN_FAILED" : error.message))
+                const diagnostic = isExplain ? null : queryErrorDiagnostic({ engine: session.conn.engine, sql: snapshot.sql, documentOffset: snapshot.executionRange.from, error });
+                if (!commitQueryError(session, snapshot, error.message, diagnostic))
                     return;
                 if (isActive()) {
                     setStatus("Error");
@@ -102,25 +104,25 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                 setStatus(`Done \u00b7 ${rows} rows \u00b7 ${duration}ms`);
             }
         },
-        [key, session, setStatus, stateMap, tabId],
+        [session, setStatus, tabId],
     );
 
     const run = useCallback(async () => {
         if (!editorRef.current) return;
-        const sql = currentStatement();
-        if (!sql)
+        const execution = currentStatement();
+        if (!execution?.sql)
             return;
-        await execute(sql, "execute");
+        await execute(execution, "execute");
     }, [execute]);
 
     const runRef = useRef(run);
     runRef.current = run;
 
     const runExplain = async () => {
-        const sql = currentStatement();
-        if (!sql)
+        const execution = currentStatement();
+        if (!execution?.sql)
             return;
-        await execute(sql, "explain");
+        await execute(execution, "explain");
     };
 
     const retrySave = async () => {
@@ -226,6 +228,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                         engine={session.conn.engine}
                         schema={schemaForCompletion(session)}
                         initialDoc={draft}
+                        executionMarker={qs.executionMarker}
                         viewRef={editorRef}
                         onDocChange={(doc) => setDraftText(doc)}
                         onRun={() => runRef.current()}

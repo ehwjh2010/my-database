@@ -3,7 +3,9 @@ import { createRoot } from "react-dom/client";
 import { ConnectionsScreen } from "./connections/connections-screen.jsx";
 import { sweepTunnels } from "./lib/tunnel.js";
 
-const EXT = "database";
+const EXT = "datagrip";
+
+document.addEventListener("contextmenu", (event) => event.preventDefault());
 
 function Root() {
     if (!window.muxy)

@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { nextCaretPosition } from "./caret.js";
 
 export function editorKind(type) {
     const t = (type || "").toLowerCase();
@@ -9,7 +10,7 @@ export function editorKind(type) {
     return "text";
 }
 
-function BoolEditor({ value, nullable, onCommit, onCancel }) {
+function BoolEditor({ value, onCommit, onCancel }) {
     const selected = value === null ? " null" : /^(1|t|true)$/i.test(String(value)) ? "true" : "false";
     return (
         <select
@@ -21,14 +22,14 @@ function BoolEditor({ value, nullable, onCommit, onCancel }) {
         >
             <option value="true">true</option>
             <option value="false">false</option>
-            {nullable ? <option value=" null">NULL</option> : null}
         </select>
     );
 }
 
-function TextEditor({ value, nullable, onCommit, onCancel }) {
-    const nullBtnRef = useRef(null);
+function TextEditor({ value, onCommit, onCancel }) {
     const [text, setText] = useState(value === null ? "" : String(value));
+    const changed = useRef(false);
+    const commit = () => onCommit(changed.current ? text : undefined);
     return (
         <div className="grid-cell-editor">
             <input
@@ -37,37 +38,31 @@ function TextEditor({ value, nullable, onCommit, onCancel }) {
                 autoFocus
                 value={text}
                 onFocus={(e) => e.target.select()}
-                onChange={(e) => setText(e.target.value)}
+                onChange={(e) => {
+                    changed.current = true;
+                    setText(e.target.value);
+                }}
                 onKeyDown={(e) => {
-                    if (e.key === "Enter") {
+                    if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
                         e.preventDefault();
-                        onCommit(text);
+                        const direction = e.key === "ArrowLeft" ? -1 : 1;
+                        const position = nextCaretPosition(e.currentTarget.value, e.currentTarget.selectionStart, e.currentTarget.selectionEnd, direction);
+                        e.currentTarget.setSelectionRange(position, position);
+                    } else if (e.key === "Enter") {
+                        e.preventDefault();
+                        commit();
                     } else if (e.key === "Escape") {
                         onCancel();
                     }
                 }}
-                onBlur={(e) => {
-                    if (e.relatedTarget === nullBtnRef.current)
-                        return;
-                    onCommit(text);
-                }}
+                onBlur={commit}
             />
-            {nullable ? (
-                <button
-                    ref={nullBtnRef}
-                    className="icon-btn"
-                    title="Set NULL"
-                    onClick={() => onCommit(null)}
-                >
-                    ∅
-                </button>
-            ) : null}
         </div>
     );
 }
 
-export function CellEditor({ type, value, nullable, onCommit, onCancel }) {
+export function CellEditor({ type, value, onCommit, onCancel }) {
     if (editorKind(type) === "bool")
-        return <BoolEditor value={value} nullable={nullable} onCommit={onCommit} onCancel={onCancel} />;
-    return <TextEditor value={value} nullable={nullable} onCommit={onCommit} onCancel={onCancel} />;
+        return <BoolEditor value={value} onCommit={onCommit} onCancel={onCancel} />;
+    return <TextEditor value={value} onCommit={onCommit} onCancel={onCancel} />;
 }

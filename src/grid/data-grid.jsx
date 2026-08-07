@@ -5,6 +5,7 @@ import { ContextMenu } from "../ui/context-menu.jsx";
 import { InsertRows } from "./insert-rows.jsx";
 import { getEdit, isDeleted } from "./pending-changes.js";
 import { Icon } from "../ui/icon.jsx";
+import { nextSelectedCell } from "./cell-navigation.js";
 
 function normalizeInput(value) {
     if (value === null)
@@ -17,6 +18,7 @@ function normalizeInput(value) {
 export function DataGrid({ page, changes, editable, onChange, editing, setEditing, onContextItems, onCopyColumnName, onViewCell, selectedCell, onSelectCell, scrollTarget, sortDirections, onSort }) {
     const { displayColumns, displayRows, keyValuesFor } = page;
     const [menu, setMenu] = useState(null);
+    const gridRef = useRef(null);
     const headerRefs = useRef(new Map());
     const cellRefs = useRef(new Map());
 
@@ -65,8 +67,24 @@ export function DataGrid({ page, changes, editable, onChange, editing, setEditin
         return items;
     };
 
+    const selectCell = (row, column) => {
+        gridRef.current.focus({ preventScroll: true });
+        onSelectCell({ row, column });
+    };
+
+    const onGridKeyDown = (event) => {
+        if (event.target !== event.currentTarget || editing || !selectedCell)
+            return;
+        const next = nextSelectedCell(selectedCell, event.key, displayRows.length, displayColumns.length);
+        if (!next)
+            return;
+        event.preventDefault();
+        onSelectCell(next);
+        cellRefs.current.get(`${next.row}:${next.column}`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    };
+
     return (
-        <div className="grid-wrap">
+        <div ref={gridRef} className="grid-wrap outline-none" tabIndex={0} onKeyDown={onGridKeyDown}>
             <table className="grid-table data-grid-table">
                 <thead>
                     <tr>
@@ -123,7 +141,6 @@ export function DataGrid({ page, changes, editable, onChange, editing, setEditin
                                                 <CellEditor
                                                     type={column.type}
                                                     value={edit.edited ? edit.value : value}
-                                                    nullable
                                                     onCommit={(next) => commitRowEdit(r, column, value, next)}
                                                     onCancel={() => setEditing(null)}
                                                 />
@@ -136,7 +153,7 @@ export function DataGrid({ page, changes, editable, onChange, editing, setEditin
                                             ref={(node) => node ? cellRefs.current.set(`${r}:${c}`, node) : cellRefs.current.delete(`${r}:${c}`)}
                                             className={[edit.edited ? "cell-edited" : "", selected ? "cell-selected" : ""].filter(Boolean).join(" ") || undefined}
                                             title={info.title}
-                                            onClick={() => onSelectCell({ row: r, column: c })}
+                                            onClick={() => selectCell(r, c)}
                                             onDoubleClick={editable ? () => setEditing({ kind: "row", row: r, column: column.name }) : () => onViewCell(value)}
                                             onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, items: rowContextItems(r, c) }); }}
                                         >

@@ -16,6 +16,7 @@ import { WorkspaceTabs } from "./workspace-tabs.jsx";
 import { objectCacheKey } from "./workspace-state.js";
 import { sqlFileMenuItems } from "./workspace-chrome.js";
 import { toast } from "../ui/toast.js";
+import { copyToClipboard } from "../lib/clipboard.js";
 
 function fileErrorMessage(error) {
     const code = error?.code || error?.error;
@@ -33,7 +34,7 @@ function fileErrorMessage(error) {
 }
 
 export function Workbench() {
-    const { session, view, surface, ref, order, activeId, byId, activeSqlId, activateWorkspace, closeWorkspace, activateSql, closeSql, createAndOpenFile, openSqlFile, enterConsole, setStatus, refreshSchema, schemaEpoch, queryHooksRef, newFileRef, hasDatabase } = useSession();
+    const { session, view, surface, ref, order, activeId, byId, activeSqlId, activateWorkspace, closeWorkspace, createAndOpenFile, openSqlFile, enterConsole, setStatus, refreshSchema, schemaEpoch, queryHooksRef, newFileRef, hasDatabase } = useSession();
     const [designerOpen, setDesignerOpen] = useState(false);
     const [transferOpen, setTransferOpen] = useState(false);
     const [newFileOpen, setNewFileOpen] = useState(false);
@@ -122,21 +123,24 @@ export function Workbench() {
         return () => { newFileRef.current = null; };
     }, [newFileRef, hasDatabase, surface, enterConsole]);
 
-    const newMenuItems = surface === "console" && consolePhase === "ready"
+    const newMenuItems = consolePhase === "ready"
         ? sqlFileMenuItems({ files: session.sqlFiles, order: session.sqlRegistry.order, byId: session.sqlRegistry.byId, onCreate: openNewFile, onOpen: openFile })
         : [];
-    const tabMenuItems = surface === "console" && consolePhase === "ready"
-        ? (tab) => {
-            const entry = session.sqlRegistry.byId[tab.id];
-            if (!entry || entry.reserved || entry.name?.toLowerCase() === "console.sql")
-                return [];
-            return [
-                { label: "Rename...", onClick: () => openRenameFile(tab) },
-                { separator: true },
-                { label: "Delete", onClick: () => trashFile(tab) },
-            ];
-        }
-        : undefined;
+    const objectTabMenuItems = (tab) => {
+        const table = byId[tab.id]?.ref?.table;
+        return table ? [{ label: "Copy Table Name", onClick: () => copyToClipboard(table) }] : [];
+    };
+    const sqlTabMenuItems = (tab) => {
+        const entry = session.sqlRegistry.byId[tab.id];
+        if (!entry || entry.reserved || entry.name?.toLowerCase() === "console.sql")
+            return [];
+        return [
+            { label: "Rename...", onClick: () => openRenameFile(tab) },
+            { separator: true },
+            { label: "Delete", onClick: () => trashFile(tab) },
+        ];
+    };
+    const activeSqlTab = session.sqlRegistry.byId[activeSqlId];
 
     useEffect(() => {
         if (hasDatabase && consolePhase === "missing")
@@ -177,14 +181,19 @@ export function Workbench() {
                 <Sidebar onNewTable={() => setDesignerOpen(true)} onTransfer={() => setTransferOpen(true)} />
                 <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                     <WorkspaceTabs
-                        order={surface === "console" ? session.sqlRegistry.order : order}
-                        activeId={surface === "console" ? activeSqlId : activeId}
-                        byId={surface === "console" ? session.sqlRegistry.byId : byId}
-                        changesByKey={surface === "console" ? null : session.changes}
-                        onActivate={surface === "console" ? activateSql : activateWorkspace}
-                        onClose={surface === "console" ? closeSql : closeWorkspace}
-                        newMenuItems={surface === "console" ? newMenuItems : []}
-                        tabMenuItems={tabMenuItems}
+                        order={order}
+                        activeId={surface === "object" ? activeId : null}
+                        byId={byId}
+                        changesByKey={session.changes}
+                        onActivate={activateWorkspace}
+                        onClose={closeWorkspace}
+                        newMenuItems={newMenuItems}
+                        tabMenuItems={objectTabMenuItems}
+                        consoleActive={surface === "console"}
+                        consoleDisabled={!hasDatabase}
+                        consoleName={activeSqlTab?.name}
+                        consoleTabMenuItems={() => activeSqlTab ? sqlTabMenuItems(activeSqlTab) : []}
+                        onConsole={() => enterConsole().catch(() => undefined)}
                     />
                     <div className="flex min-h-0 min-w-0 flex-1 flex-col">{main()}</div>
                 </div>

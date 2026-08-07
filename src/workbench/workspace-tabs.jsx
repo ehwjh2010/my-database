@@ -3,7 +3,7 @@ import { Icon } from "../ui/icon.jsx";
 import { ContextMenu } from "../ui/context-menu.jsx";
 import { closeWorkspaceTabIntent, projectWorkspaceTabs, workspaceSwitchMenuItems } from "./workspace-chrome.js";
 
-export function WorkspaceTabs({ order = [], activeId, byId = {}, changesByKey, onActivate, onClose, newMenuItems = [], tabMenuItems }) {
+export function WorkspaceTabs({ order = [], activeId, byId = {}, changesByKey, onActivate, onClose, newMenuItems = [], tabMenuItems, consoleActive, consoleDisabled, consoleName = "Console", consoleTabMenuItems, onConsole }) {
     const [menu, setMenu] = useState(null);
     const [newMenu, setNewMenu] = useState(null);
     const [tabMenu, setTabMenu] = useState(null);
@@ -17,10 +17,32 @@ export function WorkspaceTabs({ order = [], activeId, byId = {}, changesByKey, o
         event.stopPropagation();
         setTabMenu({ x: event.clientX, y: event.clientY, items: nextItems });
     };
+    const openConsoleMenu = (event) => {
+        const items = consoleTabMenuItems?.() || [];
+        if (!items.length)
+            return;
+        event.preventDefault();
+        setTabMenu({ x: event.clientX, y: event.clientY, items });
+    };
 
     return (
         <div className="workspace-tabs" data-testid="workspace-tabs">
             <div className="workspace-tabs-scroll" role="tablist" aria-label="Open workspaces">
+                {onConsole ? (
+                    <button
+                        type="button"
+                        className={`workspace-tab ${consoleActive ? "active" : ""}`}
+                        role="tab"
+                        aria-selected={consoleActive}
+                        disabled={consoleDisabled}
+                        title={consoleName}
+                        onClick={onConsole}
+                        onContextMenu={openConsoleMenu}
+                    >
+                        <Icon name="code" />
+                        <span className="workspace-tab-name">{consoleName}</span>
+                    </button>
+                ) : null}
                 {tabs.map((tab) => (
                     <div
                         key={tab.id}

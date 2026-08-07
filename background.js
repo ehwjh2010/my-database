@@ -1,4 +1,4 @@
-const EXT = "database";
+const EXT = "datagrip";
 const tabsByConnection = new Map();
 
 function parseData(raw) {

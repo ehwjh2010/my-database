@@ -7,7 +7,6 @@ function InsertCell({ insert, column, editing, onOpenEditor, onCommit, onCancel 
                 <CellEditor
                     type={column.type}
                     value={insert.cells.has(column.name) ? insert.cells.get(column.name) : null}
-                    nullable
                     onCommit={onCommit}
                     onCancel={onCancel}
                 />

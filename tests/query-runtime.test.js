@@ -78,6 +78,52 @@ test("current query failure keeps its last successful result and export context"
     assert.equal(state.queryRunning, false);
 });
 
+test("execution markers retain the current request state and diagnostic", () => {
+    const session = stubSession();
+    const coordinator = createWorkspaceCoordinator(session);
+    const { workspaceId } = coordinator.openOrActivate({ database: "app", schema: "main", table: "orders" });
+    const first = coordinator.initiateQueryExecute(workspaceId, "SELECT 1", "execute", { line: 3, from: 12 });
+    const second = coordinator.initiateQueryExecute(workspaceId, "SELECT 2", "execute", { line: 5, from: 34 });
+    const state = session.queryState.get(session.registry.byId[workspaceId].key);
+
+    assert.deepEqual(state.executionMarker, { line: 5, status: "running" });
+    assert.equal(commitQueryError(session, first, "old failure", { from: 12, to: 13, message: "old failure" }), false);
+    assert.deepEqual(state.executionMarker, { line: 5, status: "running" });
+    assert.equal(commitQueryResult(session, second, [{ columns: [], rows: [] }]), true);
+    assert.deepEqual(state.executionMarker, { line: 5, status: "success" });
+
+    const failure = coordinator.initiateQueryExecute(workspaceId, "SELECT broken", "execute", { line: 7, from: 60 });
+    const diagnostic = { from: 67, to: 73, message: "syntax error" };
+    assert.equal(commitQueryError(session, failure, "syntax error", diagnostic), true);
+    assert.deepEqual(state.executionMarker, { line: 7, status: "error", diagnostic });
+});
+
+test("table and SQL-file execution markers stay isolated when ids overlap", async () => {
+    const session = stubSession({
+        conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } },
+        sqlNamespace: { databaseDir: "/tmp/sql", fingerprint: "fingerprint", databaseKey: "fingerprint" },
+    });
+    const coordinator = createWorkspaceCoordinator(session, {
+        sqlFiles: {
+            async createSqlFile(_, name) {
+                return { name, path: `/tmp/sql/${name}`, size: 0, mtimeMs: 0, reserved: false };
+            },
+        },
+    });
+    const { workspaceId } = coordinator.openOrActivate({ database: "app", schema: "main", table: "orders" });
+    const { sqlTabId } = await coordinator.newQuery();
+    const tableRequest = coordinator.initiateQueryExecute(workspaceId, "SELECT 1", "execute", { line: 2, from: 8 }, false);
+    const sqlRequest = coordinator.initiateQueryExecute(sqlTabId, "SELECT 2", "execute", { line: 6, from: 42 }, true);
+
+    assert.equal(workspaceId, sqlTabId);
+    assert.deepEqual(session.queryState.get(session.registry.byId[workspaceId].key).executionMarker, { line: 2, status: "running" });
+    assert.deepEqual(session.sqlState.get(sqlRequest.sqlKey).executionMarker, { line: 6, status: "running" });
+    assert.equal(commitQueryResult(session, tableRequest, [{ columns: [], rows: [] }]), true);
+    assert.deepEqual(session.queryState.get(session.registry.byId[workspaceId].key).executionMarker, { line: 2, status: "success" });
+    assert.equal(commitQueryError(session, sqlRequest, "syntax error"), true);
+    assert.deepEqual(session.sqlState.get(sqlRequest.sqlKey).executionMarker, { line: 6, status: "error" });
+});
+
 test("SQL query ownership includes tab generation, request token, and console epoch", async () => {
     const session = stubSession({
         conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } },

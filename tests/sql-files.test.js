@@ -36,7 +36,7 @@ test("network SQL namespace uses the connection identity and database key", asyn
     const databaseKey = createHash("sha256").update("sales").digest("hex");
 
     assert.equal(namespace.fingerprint, fingerprint);
-    assert.equal(namespace.rootDir, "/Users/test-user/.my-muxy-database");
+    assert.equal(namespace.rootDir, "/Users/test-user/.muxy-datagrip");
     assert.equal(namespace.databaseKey, `db-${databaseKey}`);
     assert.equal(namespace.databaseDir, `${namespace.rootDir}/${fingerprint}/db-${databaseKey}`);
     assert.equal(calls.length, 1);

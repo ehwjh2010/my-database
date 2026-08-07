@@ -6,7 +6,6 @@ import { ScopeSelects } from "./scope-selects.jsx";
 const VIEWS = [
     { id: "data", label: "Data", icon: "grid" },
     { id: "structure", label: "Structure", icon: "columns" },
-    { id: "console", label: "Console", icon: "code" },
 ];
 
 export function Topbar() {
@@ -27,8 +26,8 @@ export function Topbar() {
                     <button
                         key={v.id}
                         className={view === v.id ? "active" : ""}
-                        disabled={v.id === "console" ? !hasDatabase : !activeId}
-                        title={!hasDatabase ? "Select a database first" : v.id !== "console" && !activeId ? "Open a table or view first" : undefined}
+                        disabled={!activeId}
+                        title={!hasDatabase ? "Select a database first" : !activeId ? "Open a table or view first" : undefined}
                         data-testid={`workspace-mode-${v.id}`}
                         aria-pressed={view === v.id}
                         onClick={() => setView(v.id)}

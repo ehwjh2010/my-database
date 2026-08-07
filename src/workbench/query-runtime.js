@@ -1,5 +1,13 @@
 import { objectCacheKey, sameObjectRef } from "./workspace-state.js";
 
+function finishExecution(state, request, status, diagnostic) {
+    if (!request.executionMarker)
+        return;
+    state.executionMarker = diagnostic
+        ? { ...request.executionMarker, status, diagnostic }
+        : { ...request.executionMarker, status };
+}
+
 export function isCurrentQueryRequest(session, request) {
     if (request?.tabId != null || request?.sqlTabId != null) {
         const tabId = request.tabId ?? request.sqlTabId;
@@ -33,11 +41,12 @@ export function commitQueryResult(session, request, data) {
     state.results = result;
     state.queryError = null;
     state.queryRunning = false;
+    finishExecution(state, request, "success");
     state.exportContext = exportable ? { objectRef: request.objectRef, result: exportable } : null;
     return true;
 }
 
-export function commitQueryError(session, request, message) {
+export function commitQueryError(session, request, message, diagnostic) {
     if (!isCurrentQueryRequest(session, request))
         return false;
     const state = request.sqlKey ? session.sqlState?.get(request.sqlKey) : session.queryState?.get(objectCacheKey(request.objectRef));
@@ -45,5 +54,6 @@ export function commitQueryError(session, request, message) {
         return false;
     state.queryError = message;
     state.queryRunning = false;
+    finishExecution(state, request, "error", diagnostic);
     return true;
 }

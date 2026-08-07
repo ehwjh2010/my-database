@@ -165,7 +165,7 @@ export async function getSqlNamespace({ conn, database }) {
     if (!database)
         throw new SqlFileError("DATABASE_REQUIRED");
     const home = await currentHome();
-    const rootDir = joinPath(home, ".my-muxy-database");
+    const rootDir = joinPath(home, ".muxy-datagrip");
     let fingerprint;
     let databaseKey;
     if (conn.engine === "sqlite") {

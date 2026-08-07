@@ -129,7 +129,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         const id = ++session.sqlTabIdCounter;
         const generation = ++session.sqlTabGenerationCounter;
         const key = `sql:${id}`;
-        session.sqlState.set(key, { sql: content, results: null, exportContext: null, queryRunning: false, queryError: null, observedVersion, dirty: false, saveStatus: "clean", saveFailed: false, saveError: null, conflictStatus: "none", conflictVersion: null, externalConflict: false });
+        session.sqlState.set(key, { sql: content, results: null, exportContext: null, queryRunning: false, queryError: null, executionMarker: null, observedVersion, dirty: false, saveStatus: "clean", saveFailed: false, saveError: null, conflictStatus: "none", conflictVersion: null, externalConflict: false });
         session.sqlOwners.set(key, { queryRequest: 0, saveTimer: null, savePromise: null, savePending: false });
         session.sqlRegistry = {
             order: [...session.sqlRegistry.order, id],
@@ -293,6 +293,8 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
                     setSqlFiles(files);
                     session.consoleState = { phase: "ready", files, error: null };
                     emit();
+                    if (!session.sqlRegistry.activeId)
+                        await coordinator.openSqlFile("console.sql", token);
                     return { namespace, files };
                 }
                 catch (error) {
@@ -326,9 +328,11 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             return createSqlTab(file, "", emptyVersion(file));
         },
 
-        async openSqlFile(rawName) {
+        async openSqlFile(rawName, expectedConsoleToken) {
             if (!hasDatabase(session))
                 return { error: "DATABASE_REQUIRED" };
+            if (expectedConsoleToken !== undefined && session.consoleToken !== expectedConsoleToken)
+                return { stale: true };
             const name = validateFileName(rawName, { allowReserved: true });
             const existingId = session.sqlRegistry.order.find((id) => session.sqlRegistry.byId[id]?.name === name);
             if (existingId !== undefined) {
@@ -343,6 +347,8 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             const api = filesApi();
             const namespace = session.sqlNamespace || await api.getNamespace({ conn: session.conn, database: currentDatabase(session) });
             const read = await api.readSqlFile(namespace, name);
+            if (expectedConsoleToken !== undefined && session.consoleToken !== expectedConsoleToken)
+                return { stale: true };
             return createSqlTab(file, read.content, read.version);
         },
 
@@ -601,7 +607,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             dataRuntimeFor(session, key, objectRef, undefined, workspaceId, generation);
             if (!(session.queryState instanceof Map))
                 session.queryState = new Map();
-            session.queryState.set(key, { sql: "", results: null, exportContext: null, queryRunning: false, queryError: null });
+            session.queryState.set(key, { sql: "", results: null, exportContext: null, queryRunning: false, queryError: null, executionMarker: null });
             session.surface = "object";
             commit({ type: "OPEN", id: workspaceId, key, generation, ref: objectRef });
             return { workspaceId, created: true, activeId: session.registry.activeId };
@@ -649,6 +655,9 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
                 return { error: "INVALID_VIEW" };
             if (!entryById(workspaceId))
                 return STALE_WORKSPACE;
+            if (session.surface === "console")
+                session.consoleToken += 1;
+            session.surface = "object";
             commit({ type: "SET_VIEW", id: workspaceId, view });
             return { view, registryRevision };
         },
@@ -831,10 +840,10 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             return { operationCtx: captureOperationCtx(), objectRef: entry.ref, ownership: ownershipFor(entry), countToken: owner.dataCountRequest, gridParams };
         },
 
-        initiateQueryExecute(workspaceId, sql, mode) {
+        initiateQueryExecute(workspaceId, sql, mode, executionRange, isSqlTab) {
             if (workspaceId == null)
                 return { error: "QUERY_TAB_REQUIRED" };
-            const sqlEntry = sqlEntryById(workspaceId);
+            const sqlEntry = isSqlTab === false ? null : sqlEntryById(workspaceId);
             if (sqlEntry) {
                 if (!QUERY_MODES.includes(mode))
                     return { error: "INVALID_QUERY_MODE" };
@@ -844,9 +853,12 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
                 owner.queryRequest = (owner.queryRequest || 0) + 1;
                 const state = session.sqlState.get(sqlEntry.key);
                 state.queryRunning = true;
+                state.executionMarker = executionRange ? { line: executionRange.line, status: "running" } : null;
                 emit();
-                return { operationCtx: captureOperationCtx(), tabId: workspaceId, tabGeneration: sqlEntry.generation, consoleEpoch: session.consoleEpoch, sqlTabId: workspaceId, sqlKey: sqlEntry.key, requestToken: owner.queryRequest, queryToken: owner.queryRequest, sql, mode };
+                return { operationCtx: captureOperationCtx(), tabId: workspaceId, tabGeneration: sqlEntry.generation, consoleEpoch: session.consoleEpoch, sqlTabId: workspaceId, sqlKey: sqlEntry.key, requestToken: owner.queryRequest, queryToken: owner.queryRequest, sql, mode, executionRange, executionMarker: state.executionMarker };
             }
+            if (isSqlTab)
+                return { error: "QUERY_TAB_REQUIRED" };
             const entry = entryById(workspaceId);
             if (!entry)
                 return STALE_WORKSPACE;
@@ -858,8 +870,9 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             owner.queryRequest = (owner.queryRequest || 0) + 1;
             const state = session.queryState.get(entry.key);
             state.queryRunning = true;
+            state.executionMarker = executionRange ? { line: executionRange.line, status: "running" } : null;
             emit();
-            return { operationCtx: captureOperationCtx(), objectRef: entry.ref, ownership: ownershipFor(entry), requestToken: owner.queryRequest, queryToken: owner.queryRequest, sql, mode };
+            return { operationCtx: captureOperationCtx(), objectRef: entry.ref, ownership: ownershipFor(entry), requestToken: owner.queryRequest, queryToken: owner.queryRequest, sql, mode, executionRange, executionMarker: state.executionMarker };
         },
 
         initiateStructureRead(workspaceId) {

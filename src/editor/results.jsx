@@ -47,7 +47,7 @@ export function Results({ results, error }) {
             </div>
         );
     if (!results || !results.length)
-        return <div className="flex h-full items-center justify-center text-muted-foreground">Run a query to see results</div>;
+        return null;
     return (
         <div className="flex h-full flex-col gap-[var(--s4)] overflow-y-auto p-[var(--s4)]">
             {results.map((result, index) => (

@@ -16,10 +16,16 @@ export function muxyTheme() {
                 fontFamily: "var(--font-mono)",
                 fontSize: "var(--font-footnote)",
             },
+            ".cm-gutter.cm-execution-gutter": { minWidth: "2rem" },
+            ".cm-execution-marker": { display: "block", width: "2rem", textAlign: "center", fontSize: "1.375rem", lineHeight: "1.25rem", fontWeight: "800" },
+            ".cm-execution-running": { color: "var(--muxy-accent)" },
+            ".cm-execution-success": { color: "var(--muxy-diff-add)" },
+            ".cm-execution-error": { color: "var(--muxy-diff-remove)" },
+            ".cm-sql-error": { textDecoration: "underline wavy var(--muxy-diff-remove)", textDecorationThickness: "1px", textUnderlineOffset: "2px" },
             ".cm-activeLine": { backgroundColor: "var(--muxy-hover)" },
             ".cm-activeLineGutter": { backgroundColor: "var(--muxy-hover)" },
             "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection": {
-                backgroundColor: "var(--muxy-accent-soft)",
+                backgroundColor: "color-mix(in srgb, var(--muxy-accent) 15%, var(--muxy-background))",
             },
             ".cm-selectionMatch": { backgroundColor: "var(--muxy-accent-soft)" },
             ".cm-tooltip": {

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
-import { createSqlEditor, syncSqlEditorDocument } from "./sql-editor.js";
+import { createSqlEditor, syncSqlEditorDocument, updateSqlEditorExecution } from "./sql-editor.js";
 
-export function SqlEditorView({ engine, schema, initialDoc, viewRef, onDocChange, onRun }) {
+export function SqlEditorView({ engine, schema, initialDoc, executionMarker, viewRef, onDocChange, onRun }) {
     const hostRef = useRef(null);
     const callbacks = useRef({ onDocChange, onRun });
     callbacks.current = { onDocChange, onRun };
@@ -11,6 +11,7 @@ export function SqlEditorView({ engine, schema, initialDoc, viewRef, onDocChange
             engine,
             doc: initialDoc,
             schema,
+            executionMarker,
             onRun: () => callbacks.current.onRun?.(),
             onDocChange: (doc) => callbacks.current.onDocChange?.(doc),
         });
@@ -25,6 +26,10 @@ export function SqlEditorView({ engine, schema, initialDoc, viewRef, onDocChange
     useEffect(() => {
         syncSqlEditorDocument(viewRef.current, initialDoc);
     }, [initialDoc, viewRef]);
+
+    useEffect(() => {
+        updateSqlEditorExecution(viewRef.current, executionMarker);
+    }, [executionMarker, viewRef]);
 
     return <div ref={hostRef} className="flex min-h-0 flex-1 flex-col" />;
 }
