@@ -28,6 +28,7 @@ Databases are reached through their command-line clients via `muxy.exec`:
 - Because commands are argument vectors, Muxy's "Allow & remember" applies per client binary (`psql`, `mysql`, `sqlite3`, …), so you approve each tool once instead of being prompted per query.
 - When the Keychain is unavailable (remote workspaces), passwords are prompted per session and kept only in memory for the credential file.
 - SSH tunnels authenticate with your ssh-agent or a key file only; password prompts are disabled (`BatchMode=yes`).
+- Saved queries are stored under `~/.muxy-datagrip/`, one directory per server fingerprint (and per database for non-SQLite engines).
 
 ## Remote workspaces
 
