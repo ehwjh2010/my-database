@@ -1,4 +1,4 @@
-# database
+# datagrip
 
 SQL database client for Muxy — SQLite, MySQL, MariaDB, and PostgreSQL.
 
