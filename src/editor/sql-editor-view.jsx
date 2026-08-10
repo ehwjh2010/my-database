@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { createSqlEditor, syncSqlEditorDocument, updateSqlEditorExecution } from "./sql-editor.js";
+import { createSqlEditor, syncSqlEditorDocument, updateSqlEditorExecution, updateSqlEditorSchema } from "./sql-editor.js";
 
 export function SqlEditorView({ engine, schema, initialDoc, executionMarker, viewRef, onDocChange, onRun }) {
     const hostRef = useRef(null);
@@ -30,6 +30,10 @@ export function SqlEditorView({ engine, schema, initialDoc, executionMarker, vie
     useEffect(() => {
         updateSqlEditorExecution(viewRef.current, executionMarker);
     }, [executionMarker, viewRef]);
+
+    useEffect(() => {
+        updateSqlEditorSchema(viewRef.current, engine, schema);
+    }, [engine, schema, viewRef]);
 
     return <div ref={hostRef} className="flex min-h-0 flex-1 flex-col" />;
 }

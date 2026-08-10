@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { EditorState } from "@codemirror/state";
-import { sql, SQLite } from "@codemirror/lang-sql";
+import { PostgreSQL, sql, SQLite } from "@codemirror/lang-sql";
 
-import { queryExecution, querySql, sqlStatementAt, syncSqlEditorDocument } from "../src/editor/sql-editor.js";
+import { queryExecution, querySql, semanticSqlIdentifiers, sqlStatementAt, syncSqlEditorDocument } from "../src/editor/sql-editor.js";
 
 test("sqlStatementAt returns the complete current statement without its terminator", () => {
     const doc = "SELECT * FROM user_info\n  WHERE id = 10;\n\nUPDATE user_info SET id = 11;";
@@ -29,6 +29,16 @@ test("querySql uses the non-empty selection or the whole document", () => {
     assert.equal(querySql(view), "SELECT 1");
     view.state.selection.main = { from: 0, to: 0 };
     assert.equal(querySql(view), "SELECT 1;\nSELECT 2;");
+});
+
+test("semanticSqlIdentifiers separates loaded tables and columns", () => {
+    const doc = "SELECT id FROM user_info ORDER BY id DESC;";
+    const state = EditorState.create({ doc, extensions: [sql({ dialect: PostgreSQL })] });
+
+    assert.deepEqual(
+        semanticSqlIdentifiers(state, { user_info: ["id"] }).map(({ from, to, kind }) => [doc.slice(from, to), kind]),
+        [["id", "column"], ["user_info", "table"], ["id", "column"]],
+    );
 });
 
 test("queryExecution records the SQL offset and execution line", () => {

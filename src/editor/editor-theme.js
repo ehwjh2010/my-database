@@ -22,7 +22,9 @@ export function muxyTheme() {
             ".cm-execution-success": { color: "var(--muxy-diff-add)" },
             ".cm-execution-error": { color: "var(--muxy-diff-remove)" },
             ".cm-sql-error": { textDecoration: "underline wavy var(--muxy-diff-remove)", textDecorationThickness: "1px", textUnderlineOffset: "2px" },
-            ".cm-sql-current-statement": { pointerEvents: "none", border: "1px solid var(--muxy-accent)", backgroundColor: "color-mix(in srgb, var(--muxy-accent) 4%, transparent)" },
+            ".cm-sql-table-name, .cm-sql-table-name *": { color: "light-dark(#000000, #A9B7C6) !important" },
+            ".cm-sql-column-name, .cm-sql-column-name *": { color: "light-dark(#660E7A, #9876AA) !important" },
+            ".cm-sql-current-statement": { pointerEvents: "none", border: "1px solid var(--muxy-diff-add)", backgroundColor: "color-mix(in srgb, var(--muxy-diff-add) 4%, transparent)" },
             ".cm-activeLine": { backgroundColor: "var(--muxy-hover)" },
             ".cm-activeLineGutter": { backgroundColor: "var(--muxy-hover)" },
             "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection": {
@@ -42,13 +44,13 @@ export function muxyTheme() {
             ".cm-panels input, .cm-panels button": { fontSize: "var(--font-body)" },
         }),
         syntaxHighlighting(HighlightStyle.define([
-            { tag: tags.keyword, color: "var(--muxy-accent)", fontWeight: "600" },
-            { tag: tags.string, color: "var(--muxy-diff-add)" },
-            { tag: [tags.number, tags.bool, tags.null], color: "var(--muxy-diff-hunk)" },
-            { tag: tags.comment, color: "var(--muxy-foreground-muted)", fontStyle: "italic" },
-            { tag: tags.operator, color: "var(--muxy-foreground)" },
-            { tag: [tags.typeName, tags.className], color: "var(--muxy-diff-remove)" },
-            { tag: tags.propertyName, color: "var(--muxy-foreground)" },
+            { tag: tags.keyword, color: "light-dark(#000080, #CC7832)", fontWeight: "600" },
+            { tag: [tags.string, tags.special(tags.string)], color: "#6A8759" },
+            { tag: [tags.number, tags.bool, tags.null], color: "#6897BB" },
+            { tag: tags.comment, color: "#808080", fontStyle: "italic" },
+            { tag: tags.operator, color: "#A9B7C6" },
+            { tag: [tags.typeName, tags.className], color: "#FFC66D" },
+            { tag: [tags.name, tags.variableName, tags.labelName], color: "#D7DAE0" },
         ])),
     ];
 }

@@ -1,5 +1,5 @@
 import { Decoration, EditorView, GutterMarker, RectangleMarker, gutter, keymap, layer, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection } from "@codemirror/view";
-import { Annotation, EditorSelection, EditorState, RangeSet, StateEffect, StateField } from "@codemirror/state";
+import { Annotation, Compartment, EditorSelection, EditorState, RangeSet, StateEffect, StateField } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { sql, PostgreSQL, MySQL, MariaSQL, SQLite } from "@codemirror/lang-sql";
 import { acceptCompletion, autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap, pickedCompletion } from "@codemirror/autocomplete";
@@ -8,6 +8,8 @@ import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { muxyTheme } from "./editor-theme.js";
 
 const DIALECTS = { postgres: PostgreSQL, mysql: MySQL, mariadb: MariaSQL, sqlite: SQLite };
+const sqlSchemaCompartments = new WeakMap();
+const structuralKeywords = new Set(["all", "and", "as", "asc", "between", "by", "case", "create", "delete", "desc", "distinct", "drop", "else", "end", "except", "exists", "fetch", "for", "from", "full", "group", "having", "in", "inner", "insert", "intersect", "into", "is", "join", "left", "like", "limit", "not", "null", "offset", "on", "or", "order", "outer", "right", "select", "set", "table", "then", "union", "update", "values", "when", "where"]);
 const syncedDocument = Annotation.define();
 const executionMarkerEffect = StateEffect.define();
 const executionDiagnosticEffect = StateEffect.define();
@@ -77,6 +79,62 @@ const executionDecorations = EditorView.decorations.of((view) => {
         return Decoration.none;
     return Decoration.set([Decoration.mark({ class: "cm-sql-error", attributes: { title: diagnostic.message, "aria-label": diagnostic.message } }).range(from, to)]);
 });
+
+function identifierKey(text) {
+    const quoted = (text.startsWith("\"") && text.endsWith("\"")) || (text.startsWith("`") && text.endsWith("`")) || (text.startsWith("[") && text.endsWith("]"));
+    return (quoted ? text.slice(1, -1) : text).toLowerCase();
+}
+
+function semanticNames(schema) {
+    const tables = new Set();
+    const columns = new Set();
+    for (const [table, fields] of Object.entries(schema)) {
+        tables.add(identifierKey(table));
+        for (const field of fields)
+            columns.add(identifierKey(field));
+    }
+    return { tables, columns };
+}
+
+export function semanticSqlIdentifiers(state, schema) {
+    const { tables, columns } = semanticNames(schema);
+    const identifiers = [];
+    syntaxTree(state).iterate({
+        enter(node) {
+            if (node.name !== "Identifier" && node.name !== "QuotedIdentifier" && node.name !== "Keyword")
+                return;
+            const key = identifierKey(state.sliceDoc(node.from, node.to));
+            const kind = tables.has(key) && (node.name !== "Keyword" || !columns.has(key)) ? "table" : columns.has(key) && !structuralKeywords.has(key) ? "column" : null;
+            if (kind)
+                identifiers.push({ from: node.from, to: node.to, kind });
+        },
+    });
+    return identifiers;
+}
+
+function semanticDecorations(schema) {
+    return EditorView.decorations.of((view) => {
+        const ranges = semanticSqlIdentifiers(view.state, schema).map(({ from, to, kind }) => Decoration.mark({ class: `cm-sql-${kind}-name` }).range(from, to));
+        return ranges.length ? Decoration.set(ranges, true) : Decoration.none;
+    });
+}
+
+function sqlExtensions(engine, schema) {
+    return [sql({ dialect: DIALECTS[engine] || SQLite, schema, upperCaseKeywords: true }), semanticDecorations(schema)];
+}
+
+function sameSchema(left, right) {
+    const leftEntries = Object.entries(left);
+    const rightEntries = Object.entries(right);
+    if (leftEntries.length !== rightEntries.length)
+        return false;
+    const rightTables = new Map(rightEntries);
+    return leftEntries.every(([table, fields]) => {
+        const other = rightTables.get(table);
+        return other && fields.length === other.length && fields.every((field, index) => field === other[index]);
+    });
+}
+
 const completionSpacing = EditorState.transactionFilter.of((transaction) => {
     if (!transaction.annotation(pickedCompletion))
         return transaction;
@@ -128,11 +186,13 @@ const currentStatementBox = layer({
         const top = Math.min(...pieces.map((piece) => piece.top));
         const right = Math.max(...pieces.map((piece) => piece.left + (piece.width || 0)));
         const bottom = Math.max(...pieces.map((piece) => piece.top + piece.height));
-        return [new RectangleMarker("cm-sql-current-statement", left, top, right - left, bottom - top)];
+        const padding = 2;
+        return [new RectangleMarker("cm-sql-current-statement", left - padding, top - padding, right - left + padding * 2, bottom - top + padding * 2)];
     },
 });
 
 export function createSqlEditor(parent, { engine, doc = "", schema = {}, executionMarker, onRun, onDocChange }) {
+    const schemaCompartment = new Compartment();
     const view = new EditorView({
         parent,
         state: EditorState.create({
@@ -161,7 +221,7 @@ export function createSqlEditor(parent, { engine, doc = "", schema = {}, executi
                     { key: "Tab", run: acceptCompletion },
                     indentWithTab,
                 ]),
-                sql({ dialect: DIALECTS[engine] || SQLite, schema, upperCaseKeywords: true }),
+                schemaCompartment.of(sqlExtensions(engine, schema)),
                 muxyTheme(),
                 currentStatementBox,
                 EditorView.updateListener.of((update) => {
@@ -171,6 +231,7 @@ export function createSqlEditor(parent, { engine, doc = "", schema = {}, executi
             ],
         }),
     });
+    sqlSchemaCompartments.set(view, { compartment: schemaCompartment, engine, schema });
     updateSqlEditorExecution(view, executionMarker);
     return view;
 }
@@ -182,6 +243,16 @@ export function syncSqlEditorDocument(view, doc) {
         changes: { from: 0, to: view.state.doc.length, insert: doc },
         annotations: syncedDocument.of(true),
     });
+    return true;
+}
+
+export function updateSqlEditorSchema(view, engine, schema) {
+    const current = view ? sqlSchemaCompartments.get(view) : null;
+    if (!current || (current.engine === engine && sameSchema(current.schema, schema)))
+        return false;
+    view.dispatch({ effects: current.compartment.reconfigure(sqlExtensions(engine, schema)) });
+    current.engine = engine;
+    current.schema = schema;
     return true;
 }
 
