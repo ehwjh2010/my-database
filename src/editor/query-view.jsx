@@ -23,6 +23,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
     const [conflictActionError, setConflictActionError] = useState(null);
     const [modalConflictVersion, setModalConflictVersion] = useState(null);
     const [exportOpen, setExportOpen] = useState(false);
+    const [resultsOpen, setResultsOpen] = useState(false);
 
     const isSqlTab = sqlTabId != null;
     const tabId = isSqlTab ? sqlTabId : workspaceId;
@@ -69,6 +70,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
         else {
             const store = stateMap.get(key);
             if (store) store.sql = sql;
+            if (store) store.executionMarker = null;
         }
         setDraft(sql);
     }, [isSqlTab, key, session.coordinator, stateMap, tabId]);
@@ -93,6 +95,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                     return;
                 if (isActive()) {
                     setStatus("Error");
+                    setResultsOpen(true);
                 }
                 return;
             }
@@ -102,6 +105,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
             const duration = data.reduce((sum, r) => sum + (r.durationMs || 0), 0);
             if (isActive()) {
                 setStatus(`Done \u00b7 ${rows} rows \u00b7 ${duration}ms`);
+                setResultsOpen(true);
             }
         },
         [session, setStatus, tabId],
@@ -179,6 +183,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
     };
 
     const canExport = Boolean(qs.exportContext?.result?.columns?.length);
+    const hasResults = Boolean(qs.results?.results?.length || qs.queryError);
 
     return (
         <div className="flex min-h-0 flex-1">
@@ -192,6 +197,9 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                         Explain
                     </button>
                     <div className="flex-1" />
+                    <button className={`icon-btn${resultsOpen ? " active" : ""}`} title={resultsOpen ? "Hide results" : "Show results"} disabled={!hasResults} onClick={() => setResultsOpen(!resultsOpen)}>
+                        <Icon name="table" />
+                    </button>
                     <button className="icon-btn" title="Export results" disabled={!canExport || qs.queryRunning} onClick={() => setExportOpen(true)}>
                         <Icon name="download" />
                     </button>
@@ -223,7 +231,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                         </div>
                     </Modal>
                 ) : null}
-                <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
                     <SqlEditorView
                         engine={session.conn.engine}
                         schema={schemaForCompletion(session)}
@@ -233,9 +241,13 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                         onDocChange={(doc) => setDraftText(doc)}
                         onRun={() => runRef.current()}
                     />
-                </div>
-                <div className="min-h-0 border-t" style={{ borderColor: "var(--muxy-border)", flex: "0 0 45%" }}>
-                    <Results results={qs.results?.results} error={qs.queryError} />
+                    {hasResults && resultsOpen ? (
+                        <div className="absolute inset-x-0 bottom-0 z-10 flex h-[45%] flex-col overflow-hidden rounded-t-[var(--radius-card)] border border-b-0 bg-background" style={{ borderColor: "var(--muxy-border)" }}>
+                            <div className="min-h-0 flex-1 overflow-hidden">
+                                <Results results={qs.results?.results} error={qs.queryError} onClose={() => setResultsOpen(false)} />
+                            </div>
+                        </div>
+                    ) : null}
                 </div>
             </div>
             {exportOpen ? <ExportMenuModal onClose={() => setExportOpen(false)} onExport={exportResults} /> : null}

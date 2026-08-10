@@ -20,6 +20,14 @@ export default defineConfig({
         workbench: resolve(__dirname, "panel/index.html"),
         connections: resolve(__dirname, "panel/connections.html"),
       },
+      output: {
+        manualChunks(id) {
+          if (id.includes("/node_modules/@codemirror/") || id.includes("/node_modules/@lezer/"))
+            return "codemirror";
+          if (id.includes("/node_modules/react/") || id.includes("/node_modules/react-dom/") || id.includes("/node_modules/scheduler/"))
+            return "react";
+        },
+      },
     },
   },
 });

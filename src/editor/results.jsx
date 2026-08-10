@@ -1,5 +1,7 @@
+import { useEffect, useId, useRef, useState } from "react";
 import { Grid } from "../grid/grid.jsx";
 import { formatNumber } from "../lib/format.js";
+import { Icon } from "../ui/icon.jsx";
 
 function metaLine(result) {
     const meta = [];
@@ -13,19 +15,19 @@ function metaLine(result) {
     return meta.join(" · ");
 }
 
-function ResultBlock({ result, index, count }) {
+function ResultBlock({ result, label }) {
     return (
-        <div className="result-block flex min-h-0 flex-col rounded-[var(--radius-card)] border" style={{ borderColor: "var(--muxy-border)" }}>
+        <div className="result-block result-block-single flex min-h-0 flex-1 flex-col">
             <div
                 className="flex items-center gap-[var(--s4)] border-b px-[var(--s4)] py-[var(--s2)] text-[var(--font-footnote)] text-muted-foreground"
                 style={{ borderColor: "var(--muxy-border)" }}
             >
-                {count > 1 ? `#${index + 1}` : "Result"}
+                {label}
                 <div className="flex-1" />
                 {metaLine(result)}
             </div>
             {result.columns.length ? (
-                <div className="result-grid flex min-h-0 flex-col">
+                <div className="result-grid flex min-h-0 flex-1 flex-col">
                     <Grid columns={result.columns} rows={result.rows} />
                 </div>
             ) : (
@@ -39,7 +41,22 @@ function ResultBlock({ result, index, count }) {
     );
 }
 
-export function Results({ results, error }) {
+function resultLabel(index) {
+    return `Result ${index + 1}`;
+}
+
+export function Results({ results, error, onClose }) {
+    const baseId = useId();
+    const resultsRef = useRef(results);
+    const [activeIndex, setActiveIndex] = useState(0);
+    const [closedIndexes, setClosedIndexes] = useState([]);
+
+    useEffect(() => {
+        resultsRef.current = results;
+        setActiveIndex(0);
+        setClosedIndexes([]);
+    }, [results]);
+
     if (error)
         return (
             <div className="p-[var(--s5)]">
@@ -48,11 +65,71 @@ export function Results({ results, error }) {
         );
     if (!results || !results.length)
         return null;
+
+    const previousResults = resultsRef.current !== results;
+    const tabs = results
+        .map((result, index) => ({ result, index }))
+        .filter(({ index }) => previousResults || !closedIndexes.includes(index));
+    if (!tabs.length)
+        return null;
+    const active = tabs.find(({ index }) => index === (previousResults ? 0 : activeIndex)) || tabs[0];
+
+    const close = (index) => {
+        const remaining = tabs.filter((tab) => tab.index !== index);
+        if (!remaining.length) {
+            onClose?.();
+            return;
+        }
+        setClosedIndexes((current) => [...current, index]);
+        if (active.index === index) {
+            const current = tabs.findIndex((tab) => tab.index === index);
+            setActiveIndex((tabs[current + 1] || tabs[current - 1]).index);
+        }
+    };
+
+    if (results.length === 1)
+        return (
+            <div className="flex h-full min-h-0 flex-col p-[var(--s4)]">
+                <ResultBlock result={active.result} label="Result" />
+            </div>
+        );
+
     return (
-        <div className="flex h-full flex-col gap-[var(--s4)] overflow-y-auto p-[var(--s4)]">
-            {results.map((result, index) => (
-                <ResultBlock key={index} result={result} index={index} count={results.length} />
-            ))}
+        <div className="flex h-full min-h-0 flex-col">
+            <div className="result-tabs" role="tablist" aria-label="Query results">
+                {tabs.map(({ index }) => {
+                    const activeTab = active.index === index;
+                    const tabId = `${baseId}-tab-${index}`;
+                    const panelId = `${baseId}-panel-${index}`;
+                    return (
+                        <div key={index} className={`result-tab${activeTab ? " active" : ""}`}>
+                            <button
+                                id={tabId}
+                                type="button"
+                                className="result-tab-select"
+                                role="tab"
+                                aria-selected={activeTab}
+                                aria-controls={panelId}
+                                onClick={() => setActiveIndex(index)}
+                            >
+                                <Icon name="table" size={14} />
+                                <span>{resultLabel(index)}</span>
+                            </button>
+                            <button type="button" className="result-tab-close" title={`Close ${resultLabel(index)}`} onClick={() => close(index)}>
+                                <Icon name="x" size={12} />
+                            </button>
+                        </div>
+                    );
+                })}
+            </div>
+            <div
+                id={`${baseId}-panel-${active.index}`}
+                className="min-h-0 flex-1"
+                role="tabpanel"
+                aria-labelledby={`${baseId}-tab-${active.index}`}
+            >
+                <ResultBlock result={active.result} label={resultLabel(active.index)} />
+            </div>
         </div>
     );
 }

@@ -359,6 +359,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
                 return { error: "QUERY_TAB_REQUIRED" };
             state.sql = content;
             state.dirty = true;
+            state.executionMarker = null;
             state.saveStatus = state.externalConflict ? "clean" : "saving";
             state.saveFailed = false;
             if (!state.externalConflict)

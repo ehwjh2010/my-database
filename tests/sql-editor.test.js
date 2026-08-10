@@ -1,7 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { EditorState } from "@codemirror/state";
+import { sql, SQLite } from "@codemirror/lang-sql";
 
-import { queryExecution, querySql, syncSqlEditorDocument } from "../src/editor/sql-editor.js";
+import { queryExecution, querySql, sqlStatementAt, syncSqlEditorDocument } from "../src/editor/sql-editor.js";
+
+test("sqlStatementAt returns the complete current statement without its terminator", () => {
+    const doc = "SELECT * FROM user_info\n  WHERE id = 10;\n\nUPDATE user_info SET id = 11;";
+    const state = EditorState.create({ doc, extensions: [sql({ dialect: SQLite })] });
+    const firstEnd = doc.indexOf(";");
+    const secondStart = doc.indexOf("UPDATE");
+    const secondEnd = doc.lastIndexOf(";");
+
+    assert.deepEqual(sqlStatementAt(state, doc.indexOf("WHERE")), { from: 0, to: firstEnd });
+    assert.deepEqual(sqlStatementAt(state, firstEnd), { from: 0, to: firstEnd });
+    assert.deepEqual(sqlStatementAt(state, doc.length), { from: secondStart, to: secondEnd });
+});
 
 test("querySql uses the non-empty selection or the whole document", () => {
     const view = {

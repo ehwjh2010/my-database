@@ -16,8 +16,9 @@ export function FieldInput({ label, value, columns, engine, onChange, onApply })
         setActive(0);
     };
     const select = (column) => {
-        const next = insertColumn(value, completion, column.name);
-        const cursor = completion.start + (column.cursor ?? column.name.length);
+        const suffix = column.cursor ? "" : " ";
+        const next = insertColumn(value, completion, column.name + suffix);
+        const cursor = completion.start + (column.cursor ?? column.name.length + 1);
         onChange(next);
         setCompletion(null);
         requestAnimationFrame(() => {

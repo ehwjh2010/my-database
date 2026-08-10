@@ -22,6 +22,7 @@ export function muxyTheme() {
             ".cm-execution-success": { color: "var(--muxy-diff-add)" },
             ".cm-execution-error": { color: "var(--muxy-diff-remove)" },
             ".cm-sql-error": { textDecoration: "underline wavy var(--muxy-diff-remove)", textDecorationThickness: "1px", textUnderlineOffset: "2px" },
+            ".cm-sql-current-statement": { pointerEvents: "none", border: "1px solid var(--muxy-accent)", backgroundColor: "color-mix(in srgb, var(--muxy-accent) 4%, transparent)" },
             ".cm-activeLine": { backgroundColor: "var(--muxy-hover)" },
             ".cm-activeLineGutter": { backgroundColor: "var(--muxy-hover)" },
             "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection": {

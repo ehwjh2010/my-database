@@ -71,12 +71,17 @@ body,
   overflow: hidden;
 }
 
+#root {
+  --muxy-border: color-mix(in srgb, var(--muxy-foreground) 30%, transparent);
+}
+
 body {
   background: var(--muxy-background);
   color: var(--muxy-foreground);
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
   font-size: var(--font-body);
   -webkit-font-smoothing: antialiased;
+  border: 1px solid color-mix(in srgb, var(--muxy-foreground) 30%, transparent);
 }
 
 button {
@@ -140,6 +145,11 @@ textarea:focus {
 .icon-btn:hover {
   background: var(--muxy-hover);
   color: var(--muxy-foreground);
+}
+
+.icon-btn.active {
+  background: var(--muxy-accent-soft);
+  color: var(--muxy-accent);
 }
 
 .icon-btn svg {
@@ -766,6 +776,7 @@ textarea:focus {
 
 .grid-wrap {
   overflow: auto;
+  overscroll-behavior-x: none;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -845,8 +856,7 @@ textarea:focus {
   top: calc(100% + var(--s2));
   left: var(--s4);
   z-index: 10;
-  display: flex;
-  visibility: hidden;
+  display: none;
   flex-direction: column;
   gap: var(--s3);
   width: max-content;
@@ -862,15 +872,13 @@ textarea:focus {
   line-height: 1.5;
   text-align: left;
   white-space: normal;
-  opacity: 0;
   pointer-events: none;
 }
 
 .column-header:hover > .column-tooltip,
 .sortable-header:hover > .column-tooltip,
 .sortable-header:focus-visible > .column-tooltip {
-  visibility: visible;
-  opacity: 1;
+  display: flex;
 }
 
 .sort-arrow {
@@ -951,6 +959,7 @@ textarea:focus {
   width: 100%;
   min-width: 80px;
   padding: 0 var(--s4);
+  border: none;
 }
 
 .grid-table-structure {
@@ -1023,6 +1032,88 @@ textarea:focus {
 
 .result-grid {
   max-height: var(--result-grid-max-height);
+}
+
+.result-block-single .result-grid {
+  max-height: none;
+}
+
+.result-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: var(--s1);
+  min-height: calc(var(--input-height) + var(--s2));
+  padding: var(--s2) var(--s3) 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-bottom: 1px solid var(--muxy-border);
+}
+
+.result-tab {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  height: var(--input-height);
+  align-self: end;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: transparent;
+  color: var(--muxy-foreground-muted);
+}
+
+.result-tab:hover,
+.result-tab:focus-within,
+.result-tab.active {
+  background: var(--muxy-surface);
+  color: var(--muxy-foreground);
+}
+
+.result-tab.active {
+  border-color: var(--muxy-border);
+  border-bottom-color: var(--muxy-surface);
+  margin-bottom: -1px;
+  font-weight: 600;
+}
+
+.result-tab-select,
+.result-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.result-tab-select {
+  gap: var(--s2);
+  min-width: 0;
+  padding: 0 var(--s3);
+  font: inherit;
+  white-space: nowrap;
+}
+
+.result-tab-select span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.result-tab-select svg {
+  flex-shrink: 0;
+}
+
+.result-tab-close {
+  width: var(--icon);
+  flex-shrink: 0;
+  margin-right: var(--s2);
+  padding: 0;
+  border-radius: var(--radius-sm);
+}
+
+.result-tab-close:hover,
+.result-tab-close:focus-visible {
+  background: var(--muxy-hover);
 }
 
 .pending-bar {

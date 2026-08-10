@@ -1,8 +1,9 @@
-import { Decoration, EditorView, GutterMarker, gutter, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection } from "@codemirror/view";
-import { Annotation, EditorState, RangeSet, StateEffect, StateField } from "@codemirror/state";
+import { Decoration, EditorView, GutterMarker, RectangleMarker, gutter, keymap, layer, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection } from "@codemirror/view";
+import { Annotation, EditorSelection, EditorState, RangeSet, StateEffect, StateField } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { sql, PostgreSQL, MySQL, MariaSQL, SQLite } from "@codemirror/lang-sql";
 import { acceptCompletion, autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap, pickedCompletion } from "@codemirror/autocomplete";
+import { syntaxTree } from "@codemirror/language";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { muxyTheme } from "./editor-theme.js";
 
@@ -84,6 +85,53 @@ const completionSpacing = EditorState.transactionFilter.of((transaction) => {
     return [transaction, { changes: hasSpace ? undefined : { from: cursor, insert: " " }, selection: { anchor: cursor + 1 }, sequential: true }];
 });
 
+export function sqlStatementAt(state, pos) {
+    if (pos == null || !state.doc.length)
+        return null;
+    const tree = syntaxTree(state);
+    const candidates = [pos, pos - 1, pos + 1].filter((offset, index, values) => offset >= 0 && offset < state.doc.length && values.indexOf(offset) === index);
+    for (const offset of candidates) {
+        let node = tree.resolveInner(offset, -1);
+        while (node && node.name !== "Statement")
+            node = node.parent;
+        if (!node)
+            continue;
+        const terminator = node.lastChild?.name === ";" ? node.lastChild.from : node.to;
+        if (terminator > node.from)
+            return { from: node.from, to: terminator };
+    }
+    return null;
+}
+
+const currentStatementBox = layer({
+    above: true,
+    update(update) {
+        return update.docChanged || update.selectionSet;
+    },
+    markers(view) {
+        const statement = sqlStatementAt(view.state, view.state.selection.main.head);
+        if (!statement)
+            return [];
+        const firstLine = view.state.doc.lineAt(statement.from).number;
+        const lastLine = view.state.doc.lineAt(Math.max(statement.from, statement.to - 1)).number;
+        const pieces = [];
+        for (let number = firstLine; number <= lastLine; number += 1) {
+            const line = view.state.doc.line(number);
+            const from = number === firstLine ? statement.from : line.from;
+            const to = number === lastLine ? statement.to : line.to;
+            if (to > from)
+                pieces.push(...RectangleMarker.forRange(view, "", EditorSelection.range(from, to)));
+        }
+        if (!pieces.length)
+            return [];
+        const left = Math.min(...pieces.map((piece) => piece.left));
+        const top = Math.min(...pieces.map((piece) => piece.top));
+        const right = Math.max(...pieces.map((piece) => piece.left + (piece.width || 0)));
+        const bottom = Math.max(...pieces.map((piece) => piece.top + piece.height));
+        return [new RectangleMarker("cm-sql-current-statement", left, top, right - left, bottom - top)];
+    },
+});
+
 export function createSqlEditor(parent, { engine, doc = "", schema = {}, executionMarker, onRun, onDocChange }) {
     const view = new EditorView({
         parent,
@@ -115,6 +163,7 @@ export function createSqlEditor(parent, { engine, doc = "", schema = {}, executi
                 ]),
                 sql({ dialect: DIALECTS[engine] || SQLite, schema, upperCaseKeywords: true }),
                 muxyTheme(),
+                currentStatementBox,
                 EditorView.updateListener.of((update) => {
                     if (update.docChanged && onDocChange && !update.transactions.some((transaction) => transaction.annotation(syncedDocument)))
                         onDocChange(update.state.doc.toString());
