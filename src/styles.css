@@ -33,6 +33,7 @@
   --font-caption: 10px;
   --font-footnote: 11px;
   --font-body: 12px;
+  --font-sql: 14px;
   --font-emphasis: 13px;
   --font-title: 14px;
   --icon-sm: 12px;
@@ -57,6 +58,9 @@
   --sidebar-width: 250px;
   --side-panel-width: 288px;
   --font-mono: "SF Mono", Menlo, monospace;
+  --editor-background: #1e1f22;
+  --editor-surface: #2b2d30;
+  --editor-hover: #323437;
 }
 
 * {
@@ -726,6 +730,14 @@ textarea:focus {
   flex-shrink: 0;
 }
 
+.sql-editor-toolbar {
+  background: var(--editor-surface);
+}
+
+.sql-editor-host {
+  background: var(--editor-background);
+}
+
 .toolbar-footer {
   display: flex;
   align-items: center;
@@ -1309,7 +1321,7 @@ textarea:focus {
 
 .cm-editor {
   height: 100%;
-  font-size: var(--font-body);
+  font-size: var(--font-sql);
 }
 
 .cm-editor.cm-focused {

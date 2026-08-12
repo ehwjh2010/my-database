@@ -188,7 +188,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
     return (
         <div className="flex min-h-0 flex-1">
             <div className="flex min-w-0 flex-1 flex-col">
-                <div className="toolbar border-b" style={{ borderColor: "var(--muxy-border)" }}>
+                <div className="toolbar sql-editor-toolbar border-b" style={{ borderColor: "var(--muxy-border)" }}>
                     <button className="btn btn-compact btn-primary" disabled={qs.queryRunning} onClick={run}>
                         <Icon name="play" />
                         Run

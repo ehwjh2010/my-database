@@ -5,11 +5,11 @@ import { tags } from "@lezer/highlight";
 export function muxyTheme() {
     return [
         EditorView.theme({
-            "&": { backgroundColor: "var(--muxy-background)", color: "var(--muxy-foreground)", height: "100%" },
-            ".cm-content": { caretColor: "var(--muxy-accent)", fontFamily: "var(--font-mono)", fontSize: "var(--font-body)" },
+            "&": { backgroundColor: "var(--editor-background)", color: "var(--muxy-foreground)", height: "100%" },
+            ".cm-content": { caretColor: "var(--muxy-accent)", fontFamily: "var(--font-mono)", fontSize: "var(--font-sql)" },
             ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--muxy-accent)" },
             ".cm-gutters": {
-                backgroundColor: "var(--muxy-background)",
+                backgroundColor: "var(--editor-background)",
                 color: "var(--muxy-foreground-muted)",
                 border: "none",
                 borderRight: "1px solid var(--muxy-border)",
@@ -25,10 +25,10 @@ export function muxyTheme() {
             ".cm-sql-table-name, .cm-sql-table-name *": { color: "light-dark(#000000, #A9B7C6) !important" },
             ".cm-sql-column-name, .cm-sql-column-name *": { color: "light-dark(#660E7A, #9876AA) !important" },
             ".cm-sql-current-statement": { pointerEvents: "none", border: "1px solid var(--muxy-diff-add)", backgroundColor: "color-mix(in srgb, var(--muxy-diff-add) 4%, transparent)" },
-            ".cm-activeLine": { backgroundColor: "var(--muxy-hover)" },
-            ".cm-activeLineGutter": { backgroundColor: "var(--muxy-hover)" },
+            ".cm-activeLine": { backgroundColor: "var(--editor-hover)" },
+            ".cm-activeLineGutter": { backgroundColor: "var(--editor-hover)" },
             "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection": {
-                backgroundColor: "color-mix(in srgb, var(--muxy-accent) 15%, var(--muxy-background))",
+                backgroundColor: "color-mix(in srgb, var(--muxy-accent) 15%, var(--editor-background))",
             },
             ".cm-selectionMatch": { backgroundColor: "var(--muxy-accent-soft)" },
             ".cm-tooltip": {

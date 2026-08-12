@@ -35,5 +35,5 @@ export function SqlEditorView({ engine, schema, initialDoc, executionMarker, vie
         updateSqlEditorSchema(viewRef.current, engine, schema);
     }, [engine, schema, viewRef]);
 
-    return <div ref={hostRef} className="flex min-h-0 flex-1 flex-col" />;
+    return <div ref={hostRef} className="sql-editor-host flex min-h-0 flex-1 flex-col" />;
 }
