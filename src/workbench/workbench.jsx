@@ -124,7 +124,7 @@ export function Workbench() {
     }, [newFileRef, hasDatabase, surface, enterConsole]);
 
     const newMenuItems = consolePhase === "ready"
-        ? sqlFileMenuItems({ files: session.sqlFiles, order: session.sqlRegistry.order, byId: session.sqlRegistry.byId, onCreate: openNewFile, onOpen: openFile })
+        ? sqlFileMenuItems({ files: session.sqlFiles, onCreate: openNewFile, onOpen: openFile })
         : [];
     const objectTabMenuItems = (tab) => {
         const table = byId[tab.id]?.ref?.table;
@@ -162,7 +162,7 @@ export function Workbench() {
         if (surface === "console") {
             const sqlEntry = session.sqlRegistry.byId[activeSqlId];
             if (!sqlEntry)
-                return <ConsoleView state={session.consoleState} hasDatabase={hasDatabase} hasQueryTab={false} onNewQuery={openNewFile} onRetry={() => enterConsole().catch(() => undefined)} />;
+                return <ConsoleView state={session.consoleState} hasDatabase={hasDatabase} hasQueryTab={false} onNewQuery={openNewFile} onOpenFile={openFile} onRetry={() => enterConsole().catch(() => undefined)} />;
             return <QueryView key={`sql:${activeSqlId}`} session={session} sqlTabId={activeSqlId} setStatus={setStatus} queryHooksRef={queryHooksRef} />;
         }
         if (view === "query")

@@ -422,9 +422,8 @@ test("changeView returns to the object surface after Console", () => {
     assert.equal(session.registry.byId[workspaceId].view, "structure");
 });
 
-test("changeView ignores a late console.sql open", async () => {
-    const read = deferred();
-    const readStarted = deferred();
+test("changeView remains on the object surface when a Console manifest load finishes late", async () => {
+    const list = deferred();
     const session = stubSession({ conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } } });
     const coordinator = createWorkspaceCoordinator(session, stubAdapters({
         sqlFiles: {
@@ -433,20 +432,15 @@ test("changeView ignores a late console.sql open", async () => {
             },
             async ensureConsoleFile() {},
             async listSqlFiles() {
-                return [{ name: "console.sql", path: "/tmp/sql/console.sql", reserved: true }];
-            },
-            async readSqlFile() {
-                readStarted.resolve();
-                return read.promise;
+                return list.promise;
             },
         },
     }));
     const { workspaceId } = coordinator.openOrActivate({ database: "app", schema: "main", table: "orders" });
     const entering = coordinator.enterConsole();
 
-    await readStarted.promise;
     coordinator.changeView(workspaceId, "structure");
-    read.resolve({ content: "", version: { sha256: "hash", size: 0, mtimeMs: 4 } });
+    list.resolve([{ name: "console.sql", path: "/tmp/sql/console.sql", reserved: true }]);
     await entering;
 
     assert.equal(session.surface, "object");
@@ -622,7 +616,7 @@ test("schema changes refresh objects without changing the Console surface or SQL
     assert.equal(session.ctx.schema, "reporting");
 });
 
-test("confirmed database changes replace SQL runtime with console.sql from the new manifest", async () => {
+test("confirmed database changes clear SQL runtime and load the new file manifest", async () => {
     const files = [{ name: "console.sql", path: "/tmp/other/console.sql", reserved: true }];
     const calls = [];
     const session = stubSession({
@@ -643,10 +637,6 @@ test("confirmed database changes replace SQL runtime with console.sql from the n
                 calls.push(["list", namespace.databaseKey]);
                 return files;
             },
-            async readSqlFile(namespace, name) {
-                calls.push(["read", namespace.databaseKey, name]);
-                return { content: "", version: { sha256: "hash", size: 0, mtimeMs: 4 } };
-            },
             async createSqlFile(_, name) {
                 return { name, path: `/tmp/app/${name}`, size: 0, mtimeMs: 0, reserved: false };
             },
@@ -661,12 +651,12 @@ test("confirmed database changes replace SQL runtime with console.sql from the n
     assert.equal(result.outcome, "committed");
     assert.equal(session.ctx.database, "other");
     assert.equal(session.consoleEpoch, 1);
-    assert.equal(session.sqlRegistry.byId[session.sqlRegistry.activeId].name, "console.sql");
-    assert.equal(session.sqlState.size, 1);
-    assert.equal(session.sqlOwners.size, 1);
+    assert.deepEqual(session.sqlRegistry, { order: [], activeId: null, byId: {} });
+    assert.equal(session.sqlState.size, 0);
+    assert.equal(session.sqlOwners.size, 0);
     assert.equal(session.consoleState.phase, "ready");
     assert.deepEqual(session.sqlFiles, files);
-    assert.deepEqual(calls, [["namespace", "other"], ["ensure", "other"], ["list", "other"], ["read", "other", "console.sql"]]);
+    assert.deepEqual(calls, [["namespace", "other"], ["ensure", "other"], ["list", "other"]]);
 });
 
 test("latest scope intent wins when dirty confirmations resolve out of order", async () => {
@@ -1352,7 +1342,7 @@ test("query state is cleaned up when workspace is closed", () => {
     assert.equal(session.queryState.has(key), false, "query state is removed after close");
 });
 
-test("enterConsole opens console.sql after loading the current database file manifest", async () => {
+test("enterConsole loads the current database file manifest without opening a file", async () => {
     const calls = [];
     const session = stubSession({ conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } } });
     const coordinator = createWorkspaceCoordinator(session, stubAdapters({
@@ -1368,10 +1358,6 @@ test("enterConsole opens console.sql after loading the current database file man
                 calls.push(["list", namespace]);
                 return [{ name: "console.sql", path: "/tmp/sql/console.sql", reserved: true }];
             },
-            async readSqlFile(namespace, name) {
-                calls.push(["read", namespace, name]);
-                return { content: "SELECT 1;", version: { sha256: "hash", size: 9, mtimeMs: 4 } };
-            },
         },
     }));
 
@@ -1382,11 +1368,10 @@ test("enterConsole opens console.sql after loading the current database file man
     assert.deepEqual(result.files, [{ name: "console.sql", path: "/tmp/sql/console.sql", reserved: true }]);
     assert.equal(session.consoleState.phase, "ready");
     assert.equal(session.consoleState.error, null);
-    assert.equal(session.sqlRegistry.order.length, 1);
-    assert.equal(session.sqlRegistry.byId[session.sqlRegistry.activeId].name, "console.sql");
+    assert.deepEqual(session.sqlRegistry, { order: [], activeId: null, byId: {} });
     assert.equal(calls[0][0], "namespace");
     assert.equal(calls[0][1].database, "/tmp/app.sqlite");
-    assert.deepEqual(calls.map(([kind]) => kind), ["namespace", "ensure", "list", "read"]);
+    assert.deepEqual(calls.map(([kind]) => kind), ["namespace", "ensure", "list"]);
 });
 
 test("enterConsole keeps the original file error and retry reruns the same load", async () => {
@@ -1405,9 +1390,6 @@ test("enterConsole keeps the original file error and retry reruns the same load"
                     throw original;
                 return [{ name: "console.sql", path: "/tmp/sql/console.sql", reserved: true }];
             },
-            async readSqlFile() {
-                return { content: "", version: { sha256: "hash", size: 0, mtimeMs: 4 } };
-            },
         },
     }));
 
@@ -1419,7 +1401,7 @@ test("enterConsole keeps the original file error and retry reruns the same load"
     assert.deepEqual(retry.files, [{ name: "console.sql", path: "/tmp/sql/console.sql", reserved: true }]);
     assert.equal(session.consoleState.phase, "ready");
     assert.equal(session.consoleState.error, null);
-    assert.equal(session.sqlRegistry.byId[session.sqlRegistry.activeId].name, "console.sql");
+    assert.deepEqual(session.sqlRegistry, { order: [], activeId: null, byId: {} });
     assert.equal(attempts, 2);
 });
 

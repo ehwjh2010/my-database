@@ -57,7 +57,7 @@ export function RenameSqlFileModal({ name, error, onClose, onSubmit }) {
     return <SqlFileNameModal title="Rename SQL File" submitLabel="Rename" testId="rename-sql-file-name" initialName={name} error={error} onClose={onClose} onSubmit={onSubmit} />;
 }
 
-export function ConsoleView({ state, hasDatabase, hasQueryTab, onNewQuery, onRetry }) {
+export function ConsoleView({ state, hasDatabase, hasQueryTab, onNewQuery, onOpenFile, onRetry }) {
     const phase = state?.phase || "missing";
     const loading = phase === "loading";
     const ready = phase === "ready";
@@ -94,10 +94,23 @@ export function ConsoleView({ state, hasDatabase, hasQueryTab, onNewQuery, onRet
                         </button>
                     </EmptyState>
                 ) : (
-                    <EmptyState icon="code" title="Database Console" description="No SQL tabs open.">
-                        <button className="btn btn-primary" onClick={onNewQuery}>
+                    <EmptyState icon="code" title="Database Console" description="Open an existing SQL file or create a new one.">
+                        <div className="flex max-h-64 w-72 flex-col overflow-y-auto rounded-[var(--radius-control)] border border-border bg-surface p-[var(--s2)] text-left">
+                            {state.files.map((file) => (
+                                <button
+                                    key={file.name}
+                                    className="flex h-8 shrink-0 items-center gap-[var(--s3)] rounded-[var(--radius-sm)] px-[var(--s4)] hover:bg-accent"
+                                    title={`Open ${file.name}`}
+                                    onClick={() => onOpenFile(file)}
+                                >
+                                    <Icon name="file" />
+                                    <span className="min-w-0 flex-1 truncate font-mono">{file.name}</span>
+                                </button>
+                            ))}
+                        </div>
+                        <button className="btn" onClick={onNewQuery}>
                             <Icon name="plus" />
-                            New Query
+                            New SQL File
                         </button>
                     </EmptyState>
                 )}

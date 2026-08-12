@@ -293,8 +293,6 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
                     setSqlFiles(files);
                     session.consoleState = { phase: "ready", files, error: null };
                     emit();
-                    if (!session.sqlRegistry.activeId)
-                        await coordinator.openSqlFile("console.sql", token);
                     return { namespace, files };
                 }
                 catch (error) {

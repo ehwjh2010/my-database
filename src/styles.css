@@ -58,9 +58,9 @@
   --sidebar-width: 250px;
   --side-panel-width: 288px;
   --font-mono: "SF Mono", Menlo, monospace;
-  --editor-background: #1e1f22;
-  --editor-surface: #2b2d30;
-  --editor-hover: #323437;
+  --editor-background: light-dark(#ffffff, #1e1f22);
+  --editor-surface: light-dark(#f7f8fa, #2b2d30);
+  --editor-hover: light-dark(#e9ecf1, #323437);
 }
 
 * {

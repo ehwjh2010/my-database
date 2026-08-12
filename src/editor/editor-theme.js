@@ -45,12 +45,12 @@ export function muxyTheme() {
         }),
         syntaxHighlighting(HighlightStyle.define([
             { tag: tags.keyword, color: "light-dark(#000080, #CC7832)", fontWeight: "600" },
-            { tag: [tags.string, tags.special(tags.string)], color: "#6A8759" },
-            { tag: [tags.number, tags.bool, tags.null], color: "#6897BB" },
+            { tag: [tags.string, tags.special(tags.string)], color: "light-dark(#008000, #6A8759)" },
+            { tag: [tags.number, tags.bool, tags.null], color: "light-dark(#1750EB, #6897BB)" },
             { tag: tags.comment, color: "#808080", fontStyle: "italic" },
-            { tag: tags.operator, color: "#A9B7C6" },
-            { tag: [tags.typeName, tags.className], color: "#FFC66D" },
-            { tag: [tags.name, tags.variableName, tags.labelName], color: "#D7DAE0" },
+            { tag: tags.operator, color: "light-dark(#4D5D6C, #A9B7C6)" },
+            { tag: [tags.typeName, tags.className], color: "light-dark(#7A3E00, #FFC66D)" },
+            { tag: [tags.name, tags.variableName, tags.labelName], color: "light-dark(#1F2328, #D7DAE0)" },
         ])),
     ];
 }

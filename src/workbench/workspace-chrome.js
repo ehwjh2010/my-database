@@ -38,13 +38,10 @@ export function workspaceSwitchMenuItems({ order = [], byId = {}, onActivate } =
         }));
 }
 
-export function sqlFileMenuItems({ files = [], order = [], byId = {}, onCreate, onOpen } = {}) {
-    const openNames = new Set(order.map((id) => byId[id]?.name).filter(Boolean));
+export function sqlFileMenuItems({ files = [], onCreate, onOpen } = {}) {
     return [
         { label: "New SQL File...", onClick: onCreate },
-        ...files
-            .filter((file) => !openNames.has(file.name))
-            .map((file) => ({ label: file.name, onClick: () => onOpen?.(file) })),
+        ...files.map((file) => ({ label: file.name, onClick: () => onOpen?.(file) })),
     ];
 }
 
