@@ -2,10 +2,12 @@ import { Decoration, EditorView, GutterMarker, RectangleMarker, gutter, keymap, 
 import { Annotation, Compartment, EditorSelection, EditorState, RangeSet, StateEffect, StateField } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { sql, PostgreSQL, MySQL, MariaSQL, SQLite } from "@codemirror/lang-sql";
-import { acceptCompletion, autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap, pickedCompletion } from "@codemirror/autocomplete";
+import { acceptCompletion, autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap, insertBracket, pickedCompletion } from "@codemirror/autocomplete";
 import { syntaxTree } from "@codemirror/language";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
+import { isSqlBracketKey } from "../lib/sql-brackets.js";
 import { muxyTheme } from "./editor-theme.js";
+import { sqlPhraseCompletionSource } from "./sql-completion.js";
 
 const DIALECTS = { postgres: PostgreSQL, mysql: MySQL, mariadb: MariaSQL, sqlite: SQLite };
 const sqlSchemaCompartments = new WeakMap();
@@ -120,7 +122,13 @@ function semanticDecorations(schema) {
 }
 
 function sqlExtensions(engine, schema) {
-    return [sql({ dialect: DIALECTS[engine] || SQLite, schema, upperCaseKeywords: true }), semanticDecorations(schema)];
+    const dialectKey = DIALECTS[engine] ? engine : "sqlite";
+    const dialect = DIALECTS[dialectKey];
+    return [
+        sql({ dialect, schema, upperCaseKeywords: true }),
+        dialect.language.data.of({ autocomplete: sqlPhraseCompletionSource(dialectKey) }),
+        semanticDecorations(schema),
+    ];
 }
 
 function sameSchema(left, right) {
@@ -141,6 +149,18 @@ const completionSpacing = EditorState.transactionFilter.of((transaction) => {
     const cursor = transaction.newSelection.main.head;
     const hasSpace = transaction.newDoc.sliceString(cursor, cursor + 1) === " ";
     return [transaction, { changes: hasSpace ? undefined : { from: cursor, insert: " " }, selection: { anchor: cursor + 1 }, sequential: true }];
+});
+
+const sqlBracketKeydown = EditorView.domEventHandlers({
+    keydown(event, view) {
+        if (event.metaKey || event.ctrlKey || event.altKey || event.isComposing || !isSqlBracketKey(event.key))
+            return false;
+        const transaction = insertBracket(view.state, event.key);
+        if (!transaction)
+            return false;
+        view.dispatch(transaction);
+        return true;
+    },
 });
 
 export function sqlStatementAt(state, pos) {
@@ -209,6 +229,7 @@ export function createSqlEditor(parent, { engine, doc = "", schema = {}, executi
                 highlightActiveLine(),
                 highlightSelectionMatches(),
                 closeBrackets(),
+                sqlBracketKeydown,
                 autocompletion(),
                 completionSpacing,
                 keymap.of([

@@ -965,13 +965,15 @@ textarea:focus {
 .grid-cell-editor select {
   height: var(--control);
   min-height: var(--control);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .grid-cell-editor input {
   width: 100%;
   min-width: 80px;
   padding: 0 var(--s4);
-  border: none;
 }
 
 .grid-table-structure {

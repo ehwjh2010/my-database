@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { sqlBracketEdit } from "../lib/sql-brackets.js";
 import { columnCompletions, completionKeyAction, insertColumn, sqlCompletionItems } from "./field-completion.js";
 
 export function FieldInput({ label, value, columns, engine, onChange, onApply }) {
@@ -28,8 +29,21 @@ export function FieldInput({ label, value, columns, engine, onChange, onApply })
     };
     const onKeyDown = (event) => {
         const action = completionKeyAction(event.key, open);
-        if (!action)
+        if (!action) {
+            if (event.metaKey || event.ctrlKey || event.altKey || event.isComposing)
+                return;
+            const edit = sqlBracketEdit(value, event.currentTarget.selectionStart, event.currentTarget.selectionEnd, event.key);
+            if (!edit)
+                return;
+            event.preventDefault();
+            onChange(edit.value);
+            setCompletion(null);
+            requestAnimationFrame(() => {
+                input.current?.focus();
+                input.current?.setSelectionRange(edit.selectionStart, edit.selectionEnd);
+            });
             return;
+        }
         event.preventDefault();
         if (action === "apply") onApply();
         if (action === "close") setCompletion(null);
