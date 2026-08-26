@@ -1,7 +1,7 @@
 import { Modal } from "../ui/modal.jsx";
 import { Icon } from "../ui/icon.jsx";
 
-export function ReviewSheet({ statements, onClose, onApply }) {
+export function ReviewSheet({ statements, changed, onClose, onApply }) {
     return (
         <Modal icon="code" title="Review changes" size="xl" onClose={onClose}
             footer={
@@ -9,13 +9,14 @@ export function ReviewSheet({ statements, onClose, onApply }) {
                     <button className="btn" onClick={onClose}>
                         Cancel
                     </button>
-                    <button className="btn btn-primary" onClick={onApply}>
+                    <button className="btn btn-primary" disabled={changed} onClick={onApply}>
                         <Icon name="check" />
                         {`Apply ${statements.length} statement${statements.length === 1 ? "" : "s"}`}
                     </button>
                 </>
             }
         >
+            {changed ? <div className="error-box">Changes changed since this preview. Review again.</div> : null}
             <pre className="mono sheet-body" style={{ fontSize: "var(--font-body)", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
                 {statements.join("\n")}
             </pre>

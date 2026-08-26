@@ -174,7 +174,7 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
         if (applyDirectly)
             apply(statements);
         else
-            setReview(statements);
+            setReview({ statements: Object.freeze([...statements]), revision: model.revision });
     };
 
     const apply = async (statements) => {
@@ -314,9 +314,10 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
             </div>
             {review ? (
                 <ReviewSheet
-                    statements={review}
+                    statements={review.statements}
+                    changed={model.revision !== review.revision}
                     onClose={() => setReview(null)}
-                    onApply={() => { const s = review; setReview(null); apply(s); }}
+                    onApply={() => { if (model.revision === review.revision) apply(review.statements); }}
                 />
             ) : null}
             {viewerValue !== undefined ? <CellViewerModal value={viewerValue} onClose={() => setViewerValue(undefined)} /> : null}
