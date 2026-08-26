@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { OBJECT_EXPORT_LIMIT, exportCommittedObject } from "../src/transfer/transfer.js";
+import { OBJECT_EXPORT_LIMIT, chooseExportPath, exportCommittedObject } from "../src/transfer/transfer.js";
 import { isCurrentDataExport } from "../src/workbench/workspace-state.js";
 
 const ref = { database: "app", schema: "public", table: "orders" };
@@ -67,4 +67,36 @@ test("object export currentness requires the frozen workspace, object, scope, an
     assert.equal(isCurrentDataExport(session, operation), true);
     session.workspaceOwners.get("orders").operation = { kind: "export", token: 5 };
     assert.equal(isCurrentDataExport(session, operation), false);
+});
+
+test("choosing no destination settles before any query or write", async () => {
+    const previousMuxy = globalThis.muxy;
+    let queries = 0;
+    let writes = 0;
+    globalThis.muxy = { dialog: {
+        async pickFolder() { return "/tmp"; },
+        async prompt() { return null; },
+    } };
+    try {
+        const path = await chooseExportPath("orders.csv");
+        assert.equal(path, null);
+        assert.equal(queries, 0);
+        assert.equal(writes, 0);
+    } finally {
+        globalThis.muxy = previousMuxy;
+    }
+});
+
+test("view export uses the frozen qualified view reference", async () => {
+    let sql;
+    await exportCommittedObject({
+        driver: { async runQuery(_ctx, statement) { sql = statement; return [{ columns: [{ name: "id" }], rows: [[1]] }]; } },
+        engine: "postgres",
+        operationCtx: {},
+        objectRef: { database: "app", schema: "reporting", table: "active_orders", kind: "view" },
+        format: "json",
+        path: "/tmp/active-orders.json",
+        write: async () => {},
+    });
+    assert.equal(sql, 'SELECT * FROM "reporting"."active_orders" LIMIT 1000000 OFFSET 0');
 });
