@@ -2002,6 +2002,19 @@ test("refreshData returns started without confirm when workspace has no pending 
     assert.equal(runtime.cache, null);
 });
 
+test("refreshData rejects during apply or import before asking for confirmation", async () => {
+    const session = stubSession();
+    let confirms = 0;
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({ confirm: async () => { confirms += 1; return "Refresh"; } }));
+    const { workspaceId } = coordinator.openOrActivate({ database: "app", schema: "main", table: "orders", kind: "table" });
+    coordinator.startDataOperation(workspaceId, "apply");
+
+    const result = await coordinator.refreshData(workspaceId);
+
+    assert.deepEqual(result, { error: "DATA_MUTATION_IN_PROGRESS" });
+    assert.equal(confirms, 0);
+});
+
 test("refreshData returns STALE_WORKSPACE for a non-existent workspace", async () => {
     const session = stubSession();
     const coordinator = createWorkspaceCoordinator(session, stubAdapters());

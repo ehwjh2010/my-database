@@ -716,6 +716,9 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             const entry = entryById(workspaceId);
             if (!entry)
                 return STALE_WORKSPACE;
+            const operation = dataOperationFor(session, workspaceId);
+            if (operation.busy && (operation.kind === "apply" || operation.kind === "import"))
+                return { error: "DATA_MUTATION_IN_PROGRESS" };
             if (pendingChangeCountFor(session.changes, entry.key) > 0) {
                 let choice;
                 try {
