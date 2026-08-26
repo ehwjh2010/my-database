@@ -3,7 +3,7 @@ import { cellDisplay, ColumnTooltip } from "./grid.jsx";
 import { CellEditor } from "./cell-editor.jsx";
 import { ContextMenu } from "../ui/context-menu.jsx";
 import { InsertRows } from "./insert-rows.jsx";
-import { getEdit, isDeleted } from "./pending-changes.js";
+import { getEdit, isDeleted, setInsertCell } from "./pending-changes.js";
 import { Icon } from "../ui/icon.jsx";
 import { nextSelectedCell } from "./cell-navigation.js";
 
@@ -40,10 +40,7 @@ export function DataGrid({ page, changes, editable, onChange, editing, setEditin
 
     const commitInsertEdit = (insert, column, next) => {
         if (next !== undefined) {
-            if (next === null || next === "")
-                insert.cells.delete(column.name);
-            else
-                insert.cells.set(column.name, normalizeInput(next));
+            setInsertCell(changes.model, insert.id, column.name, normalizeInput(next));
         }
         onChange();
         setEditing(null);

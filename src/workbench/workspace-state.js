@@ -1,12 +1,11 @@
+import { changeCount } from "../grid/pending-changes.js";
+
 export const initialWorkspaceState = { order: [], activeId: null, byId: {} };
 
 function countPendingEntry(changes) {
     if (!changes)
         return 0;
-    let edits = 0;
-    for (const entry of changes.edits?.values() || [])
-        edits += entry.cells?.size || 0;
-    return edits + (changes.deletes?.size || 0) + (changes.inserts?.length || 0);
+    return changeCount(changes);
 }
 
 export function pendingChangeCount(changes) {

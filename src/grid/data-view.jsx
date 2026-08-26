@@ -154,8 +154,8 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
     const openReview = (applyDirectly) => {
         const statements = buildChangeScript(model);
         if (!statements.length) {
-            clearChanges(model);
-            bumpPendingChanges();
+            setStatus("DML not generated");
+            toast("DML_NOT_GENERATED", "warning");
             return;
         }
         if (applyDirectly)

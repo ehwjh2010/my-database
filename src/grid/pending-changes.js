@@ -4,7 +4,7 @@ export function createChanges(engine, ref, info) {
         : info.rowid
             ? ["__rowid"]
             : null;
-    return { engine, ref, info, keyColumns, edits: new Map(), deletes: new Map(), inserts: [], insertCounter: 0 };
+    return { engine, ref, info, keyColumns, edits: new Map(), deletes: new Map(), inserts: [], insertCounter: 0, revision: 0 };
 }
 
 export function isEditable(changes) {
@@ -34,9 +34,23 @@ export function setEdit(changes, keyValues, column, value, original) {
         entry.cells.delete(column);
         if (!entry.cells.size)
             changes.edits.delete(key);
+        changes.revision += 1;
         return;
     }
     entry.cells.set(column, value);
+    changes.revision += 1;
+}
+
+export function setInsertCell(changes, id, column, value) {
+    const insert = changes.inserts.find((entry) => entry.id === id);
+    if (!insert)
+        return false;
+    if (value === null || value === "")
+        insert.cells.delete(column);
+    else
+        insert.cells.set(column, value);
+    changes.revision += 1;
+    return true;
 }
 
 export function getEdit(changes, keyValues, column) {
@@ -52,6 +66,7 @@ export function toggleDelete(changes, keyValues) {
         changes.deletes.delete(key);
     else
         changes.deletes.set(key, keyValues);
+    changes.revision += 1;
 }
 
 export function isDeleted(changes, keyValues) {
@@ -61,11 +76,13 @@ export function isDeleted(changes, keyValues) {
 export function addInsert(changes) {
     const insert = { id: ++changes.insertCounter, cells: new Map() };
     changes.inserts.push(insert);
+    changes.revision += 1;
     return insert;
 }
 
 export function removeInsert(changes, id) {
     changes.inserts = changes.inserts.filter((i) => i.id !== id);
+    changes.revision += 1;
 }
 
 export function changeCount(changes) {
@@ -79,4 +96,5 @@ export function clearChanges(changes) {
     changes.edits.clear();
     changes.deletes.clear();
     changes.inserts = [];
+    changes.revision += 1;
 }
