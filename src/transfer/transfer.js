@@ -5,6 +5,8 @@ import { buildSelect } from "../lib/sql/select-builder.js";
 import { writeTextFile } from "../lib/secure-file.js";
 import { copyToClipboard } from "../lib/clipboard.js";
 
+export const OBJECT_EXPORT_LIMIT = 1000000;
+
 export function resultToInserts(engine, ref, result) {
     const target = qualifiedName(engine, ref || { table: "export" });
     const names = result.columns.map((c) => quoteIdent(engine, c.name)).join(", ");
@@ -31,12 +33,25 @@ async function chooseFile(defaultName) {
     return `${folder}/${name}`;
 }
 
-function exportContent(engine, ref, result, format) {
+export function exportContent(engine, ref, result, format) {
     if (format === "csv")
         return serializeCsv(result.columns, result.rows);
     if (format === "json")
         return resultToJson(result);
     return resultToInserts(engine, ref, result);
+}
+
+export async function chooseExportPath(defaultName) {
+    return chooseFile(defaultName);
+}
+
+export async function exportCommittedObject({ driver, engine, operationCtx, objectRef, format, path, timeoutMs, write = writeTextFile }) {
+    const sql = buildSelect(engine, objectRef, { limit: OBJECT_EXPORT_LIMIT, offset: 0 });
+    const result = (await driver.runQuery(operationCtx, sql, { timeoutMs }))[0];
+    if (!result)
+        throw new Error("EXPORT_RESULT_MISSING");
+    await write(path, exportContent(engine, objectRef, result, format));
+    return { rowCount: result.rows.length, capped: result.rows.length === OBJECT_EXPORT_LIMIT };
 }
 
 function suggestedExportName(name, format, fallback) {
@@ -78,7 +93,7 @@ export async function exportActive(session, format) {
 }
 
 async function fetchAll(session, ref) {
-    const sql = buildSelect(session.conn.engine, ref, { limit: 1000000, offset: 0 });
+    const sql = buildSelect(session.conn.engine, ref, { limit: OBJECT_EXPORT_LIMIT, offset: 0 });
     const results = await session.driver.runQuery(session.ctx, sql, { timeoutMs: session.timeoutMs });
     return results[0];
 }

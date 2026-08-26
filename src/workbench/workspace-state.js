@@ -67,6 +67,16 @@ export function isCurrentDataCount(session, request) {
         && session.gridState?.get(entry.key)?.rawWhere === request.gridParams?.rawWhere;
 }
 
+export function isCurrentDataExport(session, request) {
+    if (!request?.ownership || !isCurrentDataApply(session, request.ownership))
+        return false;
+    const entry = session.registry.byId[request.ownership.workspaceId];
+    const operation = session.workspaceOwners?.get(entry.key)?.operation;
+    return sameObjectRef(entry.ref, request.objectRef)
+        && operation?.kind === "export"
+        && operation.token === request.token;
+}
+
 export function objectCacheKey({ database, schema, table }) {
     return JSON.stringify([database ?? "", schema ?? "", table]);
 }

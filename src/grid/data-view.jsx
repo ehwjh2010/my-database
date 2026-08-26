@@ -4,7 +4,7 @@ import { Icon } from "../ui/icon.jsx";
 import { toast } from "../ui/toast.js";
 import { buildCount } from "../lib/sql/select-builder.js";
 import { buildChangeScript } from "../lib/sql/change-script.js";
-import { copyResult } from "../transfer/transfer.js";
+import { chooseExportPath, copyResult, exportCommittedObject } from "../transfer/transfer.js";
 import { copyToClipboard } from "../lib/clipboard.js";
 import { setEdit, toggleDelete, addInsert, removeInsert, clearChanges, isDeleted } from "./pending-changes.js";
 import { useTablePage } from "./use-table-page.js";
@@ -16,9 +16,10 @@ import { DataToolbar } from "./data-toolbar.jsx";
 import { ReviewSheet } from "./review-sheet.jsx";
 import { CellViewerModal } from "./cell-viewer.jsx";
 import { useSession } from "../workbench/session-context.jsx";
-import { objectCacheKey, isCurrentDataApply, isCurrentDataCount } from "../workbench/workspace-state.js";
+import { objectCacheKey, isCurrentDataApply, isCurrentDataCount, isCurrentDataExport } from "../workbench/workspace-state.js";
 import { dataRuntimeFor, initialGridState, invalidateDataRuntime } from "../workbench/data-runtime.js";
 import { changeCount } from "./pending-changes.js";
+import { ObjectExportMenu } from "./object-export-menu.jsx";
 
 export function gridStateFor(session, ref) {
     const key = objectCacheKey(ref);
@@ -57,6 +58,7 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
     const [scrollTarget, setScrollTarget] = useState(null);
     const [review, setReview] = useState(null);
     const [viewerValue, setViewerValue] = useState(undefined);
+    const [exportOpen, setExportOpen] = useState(false);
     const bumpPendingChanges = () => {
         bumpChanges();
         notifyPendingChanges();
@@ -238,10 +240,50 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
             return setView("structure");
         if (id === "import")
             return importCsv();
+        if (id === "export")
+            return setExportOpen(true);
         if (id === "delete-row" && !mutationLocked && selectionIsCurrent) {
             changes.toggleDelete(page.keyValuesFor(selectedCell.row));
             bumpPendingChanges();
             return setSelectedCell(null);
+        }
+    };
+
+    const exportObject = async (format) => {
+        setExportOpen(false);
+        const entry = session.registry.byId[workspaceId];
+        const operation = coordinator.startDataOperation(workspaceId, "export", {
+            operationCtx: Object.freeze({ ...session.ctx }),
+            objectRef: Object.freeze({ ...tableRef }),
+            ownership: Object.freeze({ workspaceId, scopeEpoch: session.scopeGeneration || 0, generation: entry?.generation }),
+            format,
+        });
+        if (operation.error)
+            return toast(operation.error, "warning");
+        try {
+            const path = await chooseExportPath(`${operation.objectRef.table}.${format}`);
+            if (!path)
+                return;
+            const exported = await exportCommittedObject({
+                driver: session.driver,
+                engine: session.conn.engine,
+                operationCtx: operation.operationCtx,
+                objectRef: operation.objectRef,
+                format: operation.format,
+                path,
+                timeoutMs: session.timeoutMs,
+            });
+            if (!isCurrentDataExport(session, operation))
+                return;
+            if (exported.capped)
+                toast("Export may be incomplete: reached 1,000,000 rows", "warning");
+            else
+                toast(`Exported ${exported.rowCount} rows`, "success");
+        } catch (error) {
+            if (isCurrentDataExport(session, operation))
+                toast(`EXPORT_FAILED: ${error.message}`, "warning");
+        } finally {
+            coordinator.settleDataOperation(operation);
         }
     };
 
@@ -353,6 +395,7 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
                     onApply={() => { if (model.revision === review.revision) apply(review.statements); }}
                 />
             ) : null}
+            {exportOpen ? <ObjectExportMenu onClose={() => setExportOpen(false)} onExport={exportObject} /> : null}
             {viewerValue !== undefined ? <CellViewerModal value={viewerValue} onClose={() => setViewerValue(undefined)} /> : null}
         </div>
     );
