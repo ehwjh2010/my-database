@@ -62,6 +62,24 @@ test("toolbar projection keeps nine commands and reports busy and disabled state
     assert.equal(toolbar.pendingLabel, "2 pending");
 });
 
+test("toolbar disables every object command when no object is selected", () => {
+    const toolbar = deriveDataToolbar({
+        hasObject: false,
+        pageState: "ready",
+        editable: true,
+        hasStableSelection: true,
+        pendingCount: 1,
+        operationKind: "idle",
+        importSupported: true,
+    });
+
+    for (const command of toolbar.commands)
+        assert.equal(command.enabled, false, command.id);
+    assert.equal(toolbar.byId.refresh.disabledReason, "OBJECT_REQUIRED");
+    assert.equal(toolbar.byId["new-row"].disabledReason, "OBJECT_REQUIRED");
+    assert.equal(toolbar.byId.apply.disabledReason, "OBJECT_REQUIRED");
+});
+
 test("toolbar projection preserves export-time editing and hides only zero pending text", () => {
     const toolbar = deriveDataToolbar({
         hasObject: true,

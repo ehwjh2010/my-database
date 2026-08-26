@@ -11,10 +11,12 @@ const COMMANDS = Object.freeze([
 ]);
 
 function reasonFor(id, input, mutationLocked, anyOperation) {
+    if (!input.hasObject)
+        return "OBJECT_REQUIRED";
     if (id === "refresh")
-        return mutationLocked ? "DATA_MUTATION_IN_PROGRESS" : input.hasObject ? null : "OBJECT_REQUIRED";
+        return mutationLocked ? "DATA_MUTATION_IN_PROGRESS" : null;
     if (id === "ddl" || id === "export")
-        return id === "export" && anyOperation ? "DATA_OPERATION_IN_PROGRESS" : input.hasObject ? null : "OBJECT_REQUIRED";
+        return id === "export" && anyOperation ? "DATA_OPERATION_IN_PROGRESS" : null;
     if ((id === "apply" || id === "import") && anyOperation)
         return "DATA_OPERATION_IN_PROGRESS";
     if (mutationLocked && id !== "apply")
