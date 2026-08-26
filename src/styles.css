@@ -730,6 +730,47 @@ textarea:focus {
   flex-shrink: 0;
 }
 
+.data-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  min-width: max-content;
+  min-height: var(--toolbar-height);
+  height: var(--toolbar-height);
+  overflow-x: auto;
+  padding: 0 var(--s5);
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--muxy-border);
+}
+
+.data-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: 24px;
+  padding-right: var(--s3);
+  border-right: 1px solid var(--muxy-border);
+}
+
+.data-toolbar-group.group-c {
+  margin-left: auto;
+  padding-right: 0;
+  border-right: 0;
+}
+
+.data-toolbar-command {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+}
+
+.data-toolbar-pending {
+  min-width: 72px;
+  color: var(--muxy-diff-add);
+  font-size: var(--font-footnote);
+  white-space: nowrap;
+}
+
 .sql-editor-toolbar {
   background: var(--editor-surface);
 }

@@ -12,12 +12,13 @@ import { DataGrid } from "./data-grid.jsx";
 import { FilterBar } from "./filter-bar.jsx";
 import { Pager } from "./pager.jsx";
 import { nextOrderBy, parseOrderBy } from "./order-by.js";
-import { PendingBar } from "./pending-bar.jsx";
+import { DataToolbar } from "./data-toolbar.jsx";
 import { ReviewSheet } from "./review-sheet.jsx";
 import { CellViewerModal } from "./cell-viewer.jsx";
 import { useSession } from "../workbench/session-context.jsx";
 import { objectCacheKey, isCurrentDataApply, isCurrentDataCount } from "../workbench/workspace-state.js";
 import { dataRuntimeFor, initialGridState, invalidateDataRuntime } from "../workbench/data-runtime.js";
+import { changeCount } from "./pending-changes.js";
 
 export function gridStateFor(session, ref) {
     const key = objectCacheKey(ref);
@@ -43,7 +44,7 @@ async function copyText(text) {
 }
 
 export function DataView({ session, tableRef, workspaceId, setStatus }) {
-    const { notifyPendingChanges, refreshData, columnFocus, consumeColumnFocus } = useSession();
+    const { notifyPendingChanges, refreshData, columnFocus, consumeColumnFocus, dataOperation, setView } = useSession();
     const coordinator = session.coordinator;
     const activeWorkspaceKey = objectCacheKey(tableRef);
     const runtime = dataRuntimeFor(session, activeWorkspaceKey, tableRef, undefined, workspaceId);
@@ -62,6 +63,16 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
     };
 
     const page = useTablePage(session, tableRef, gridState, activeWorkspaceKey, runtime.dataRevision, workspaceId);
+
+    const toolbarInput = {
+        hasObject: Boolean(tableRef),
+        pageState: page.loading ? "loading" : page.error ? "error" : page.displayRows.length ? "ready" : "empty",
+        editable: Boolean(page.editable),
+        hasStableSelection: Boolean(selectedCell && page.displayRows[selectedCell.row]),
+        pendingCount: page.changes ? changeCount(page.changes) : 0,
+        operationKind: dataOperation?.kind || "idle",
+        importSupported: Boolean(session.driver?.importCsv),
+    };
 
     useEffect(() => {
         if (!page.loading && !page.error)
@@ -110,6 +121,7 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
     if (page.loading)
         return (
             <div className="flex min-h-0 flex-1 flex-col">
+                <DataToolbar input={toolbarInput} onAction={() => {}} />
                 {queryBar}
                 <div className="flex h-full items-center justify-center text-muted-foreground">Loading…</div>
             </div>
@@ -118,6 +130,7 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
     if (page.error)
         return (
             <div className="flex min-h-0 flex-1 flex-col">
+                <DataToolbar input={toolbarInput} onAction={() => {}} />
                 {queryBar}
                 <div className="p-[var(--s6)]"><div className="error-box">{page.error}</div></div>
             </div>
@@ -182,11 +195,34 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
         setEditing({ kind: "insert", insertId: insert.id, column: page.displayColumns[0]?.name });
     };
 
+    const toolbarAction = (id) => {
+        if (id === "refresh")
+            return refreshData();
+        if (id === "new-row")
+            return addRow();
+        if (id === "discard-all") {
+            clearChanges(model);
+            return bumpPendingChanges();
+        }
+        if (id === "review-dml")
+            return openReview(false);
+        if (id === "apply")
+            return openReview(true);
+        if (id === "ddl")
+            return setView("structure");
+        if (id === "delete-row" && selectedCell && page.displayRows[selectedCell.row]) {
+            changes.toggleDelete(page.keyValuesFor(selectedCell.row));
+            bumpPendingChanges();
+            return setSelectedCell(null);
+        }
+    };
+
     const readOnlyBanner = !page.editable && tableRef.kind !== "view";
     const sortDirections = parseOrderBy(session.conn.engine, gridState.rawOrderBy, page.displayColumns);
 
     return (
         <div className="flex min-h-0 flex-1 flex-col">
+            <DataToolbar input={toolbarInput} onAction={toolbarAction} />
             {queryBar}
             {readOnlyBanner ? (
                 <div
@@ -219,16 +255,7 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
                     }}
                 />
             </div>
-            <PendingBar
-                changes={model}
-                onReview={() => openReview(false)}
-                onDiscard={() => { clearChanges(model); bumpPendingChanges(); }}
-                onApply={() => openReview(true)}
-            />
             <div className="toolbar-footer border-t" style={{ borderColor: "var(--muxy-border)" }}>
-                <button className="icon-btn" onClick={refreshData} title="Refresh data">
-                    <Icon name="refresh" />
-                </button>
                 <Pager
                     page={gridState.page}
                     pageSize={session.pageSize}
@@ -259,12 +286,6 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
                         }
                     }}
                 >
-                    {page.editable ? (
-                        <button className="btn btn-compact" onClick={addRow}>
-                            <Icon name="plus" />
-                            Row
-                        </button>
-                    ) : null}
                 </Pager>
             </div>
             {review ? (
