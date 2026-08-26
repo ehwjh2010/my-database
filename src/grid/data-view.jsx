@@ -179,15 +179,22 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
 
     const apply = async (statements) => {
         setStatus("Applying changes…");
-        const snapshot = coordinator.initiateDataApply(workspaceId, statements);
+        const revision = model.revision;
+        const operation = coordinator.startDataOperation(workspaceId, "apply", { pendingRevision: revision, statements: Object.freeze([...statements]) });
+        if (operation.error) {
+            toast(operation.error, "warning");
+            return;
+        }
+        const snapshot = coordinator.initiateDataApply(workspaceId, operation.statements);
         if (snapshot.error) {
+            coordinator.settleDataOperation(operation);
             setStatus("Apply failed");
             toast(snapshot.error, "warning");
             return;
         }
         try {
-            await session.driver.runScript(snapshot.operationCtx, statements.join("\n"), { timeoutMs: session.timeoutMs });
-            if (isCurrentDataApply(session, snapshot.ownership)) {
+            await session.driver.runScript(snapshot.operationCtx, operation.statements.join("\n"), { timeoutMs: session.timeoutMs });
+            if (isCurrentDataApply(session, snapshot.ownership) && model.revision === revision) {
                 clearChanges(model);
                 notifyPendingChanges();
                 invalidateDataRuntime(runtime);
@@ -199,6 +206,8 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
                 setStatus("Apply failed");
                 toast(error.message, "warning");
             }
+        } finally {
+            coordinator.settleDataOperation(operation);
         }
     };
 
