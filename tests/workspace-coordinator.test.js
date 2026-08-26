@@ -151,6 +151,33 @@ test("openOrActivate creates a workspace with data view and stores it in the ses
     assert.equal(revisions, 1);
 });
 
+test("workspace coordinator projects one data operation and retains a newer operation when an old one settles", () => {
+    const session = stubSession();
+    let revisions = 0;
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({ notify: () => { revisions += 1; } }));
+    const { workspaceId } = coordinator.openOrActivate({ database: "app", schema: "main", table: "orders", kind: "table" });
+    const apply = coordinator.startDataOperation(workspaceId, "apply");
+
+    assert.equal(coordinator.dataOperationFor(workspaceId).kind, "apply");
+    assert.deepEqual(coordinator.startDataOperation(workspaceId, "export"), { error: "DATA_OPERATION_IN_PROGRESS" });
+    assert.deepEqual(coordinator.settleDataOperation({ ...apply, operationToken: apply.operationToken + 1 }), { outcome: "stale" });
+    assert.equal(coordinator.dataOperationFor(workspaceId).kind, "apply");
+    assert.deepEqual(coordinator.settleDataOperation(apply), { outcome: "settled" });
+    assert.equal(coordinator.dataOperationFor(workspaceId).kind, "idle");
+    assert.equal(revisions, 3);
+});
+
+test("workspace cleanup removes its operation projection", () => {
+    const session = stubSession();
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters());
+    const { workspaceId } = coordinator.openOrActivate({ database: "app", schema: "main", table: "orders", kind: "table" });
+
+    coordinator.startDataOperation(workspaceId, "export");
+    coordinator.close(workspaceId);
+
+    assert.deepEqual(coordinator.dataOperationFor(workspaceId), { kind: "idle", busy: false });
+});
+
 test("openOrActivate deduplicates by database, schema, and table; kind is not part of identity", () => {
     const session = stubSession();
     const coordinator = createWorkspaceCoordinator(session, stubAdapters());

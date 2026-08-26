@@ -1,4 +1,5 @@
 import { clearChanges } from "../grid/pending-changes.js";
+import { dataOperationFor, settleDataOperation, startDataOperation } from "./data-operations.js";
 import { createSqlFile, ensureConsoleFile, getSqlNamespace, listSqlFiles, readSqlFile, renameSqlFile, saveSqlFile, trashSqlFile, validateFileName } from "../lib/sql-files.js";
 import { clearDataRuntime, clearDataRuntimes, dataRuntimeFor, nextDataRequest, refreshDataRuntime } from "./data-runtime.js";
 import { currentDatabase, hasDatabase } from "./state.js";
@@ -691,6 +692,24 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
                 return STALE_WORKSPACE;
             emit();
             return { registryRevision };
+        },
+
+        dataOperationFor(workspaceId) {
+            return dataOperationFor(session, workspaceId);
+        },
+
+        startDataOperation(workspaceId, kind, snapshot) {
+            const operation = startDataOperation(session, workspaceId, kind, snapshot);
+            if (!operation.error)
+                emit();
+            return operation;
+        },
+
+        settleDataOperation(snapshot) {
+            const result = settleDataOperation(session, snapshot);
+            if (result.outcome === "settled")
+                emit();
+            return result;
         },
 
         async refreshData(workspaceId) {

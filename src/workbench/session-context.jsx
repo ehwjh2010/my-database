@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { hasDatabase } from "./state.js";
+import { dataOperationFor } from "./data-operations.js";
 
 const SessionContext = createContext(null);
 
@@ -44,6 +45,7 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, newFileRef
     const activeRef = activeWorkspace?.ref || null;
     const activeSqlId = session.sqlRegistry?.activeId || null;
     const surface = session.surface || (activeWorkspace ? "object" : "console");
+    const dataOperation = dataOperationFor(session, activeId);
 
     const refreshSchema = useCallback(async () => {
         await coordinator.initiateCatalogLoad();
@@ -102,6 +104,7 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, newFileRef
             pendingRevision,
             notifyPendingChanges,
             dataRevision,
+            dataOperation,
             queryRunRef,
             openWorkspace,
             enterConsole,
@@ -134,7 +137,7 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, newFileRef
             queryHooksRef,
             newFileRef,
         }),
-        [session, coordinator, order, activeId, byId, activeKey, activeMode, activeRef, activeSqlId, surface, registryRevision, pendingRevision, dataRevision, notifyPendingChanges, changeView, selectTable, openWorkspace, enterConsole, newQuery, createAndOpenFile, openSqlFile, activateSql, closeSql, loadTableInfo, focusTableColumn, columnFocus, consumeColumnFocus, activateWorkspace, closeWorkspace, refreshData, setWorkspaceMode, tables, columnsMap, catalogError, status, refreshSchema, changeScope, schemaEpoch, queryHooksRef, newFileRef],
+        [session, coordinator, order, activeId, byId, activeKey, activeMode, activeRef, activeSqlId, surface, registryRevision, pendingRevision, dataRevision, dataOperation, notifyPendingChanges, changeView, selectTable, openWorkspace, enterConsole, newQuery, createAndOpenFile, openSqlFile, activateSql, closeSql, loadTableInfo, focusTableColumn, columnFocus, consumeColumnFocus, activateWorkspace, closeWorkspace, refreshData, setWorkspaceMode, tables, columnsMap, catalogError, status, refreshSchema, changeScope, schemaEpoch, queryHooksRef, newFileRef],
     );
 
     return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
