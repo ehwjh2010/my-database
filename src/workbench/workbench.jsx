@@ -11,7 +11,7 @@ import { QueryView } from "../editor/query-view.jsx";
 import { ConsoleView, NewSqlFileModal, RenameSqlFileModal } from "../editor/console-view.jsx";
 import { StructureView } from "../structure/structure-view.jsx";
 import { TableDesignerModal } from "../structure/table-designer.jsx";
-import { TransferMenuModal } from "../transfer/transfer-menu.jsx";
+import { DatabaseExportModal } from "../transfer/transfer-menu.jsx";
 import { WorkspaceTabs } from "./workspace-tabs.jsx";
 import { objectCacheKey } from "./workspace-state.js";
 import { sqlFileMenuItems } from "./workspace-chrome.js";
@@ -36,7 +36,7 @@ function fileErrorMessage(error) {
 export function Workbench() {
     const { session, view, surface, ref, order, activeId, byId, activeSqlId, activateWorkspace, closeWorkspace, createAndOpenFile, openSqlFile, enterConsole, setStatus, refreshSchema, schemaEpoch, queryHooksRef, newFileRef, hasDatabase } = useSession();
     const [designerOpen, setDesignerOpen] = useState(false);
-    const [transferOpen, setTransferOpen] = useState(false);
+    const [databaseExportOpen, setDatabaseExportOpen] = useState(false);
     const [newFileOpen, setNewFileOpen] = useState(false);
     const [newFileError, setNewFileError] = useState(null);
     const [renameFile, setRenameFile] = useState(null);
@@ -178,7 +178,7 @@ export function Workbench() {
         <div className="flex h-full flex-col">
             <Topbar />
             <div className="flex min-h-0 flex-1">
-                <Sidebar onNewTable={() => setDesignerOpen(true)} onTransfer={() => setTransferOpen(true)} />
+                <Sidebar onNewTable={() => setDesignerOpen(true)} onExportDatabase={() => setDatabaseExportOpen(true)} />
                 <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                     <WorkspaceTabs
                         order={order}
@@ -204,8 +204,8 @@ export function Workbench() {
             {designerOpen ? (
                 <TableDesignerModal session={session} onClose={() => setDesignerOpen(false)} />
             ) : null}
-            {transferOpen ? (
-                <TransferMenuModal session={session} tableRef={ref} onClose={() => setTransferOpen(false)} />
+            {databaseExportOpen ? (
+                <DatabaseExportModal session={session} onClose={() => setDatabaseExportOpen(false)} />
             ) : null}
         </div>
     );

@@ -92,40 +92,6 @@ export async function exportActive(session, format) {
     return exportResult(session.conn.engine, context.objectRef, context.result, format, entry.name);
 }
 
-async function fetchAll(session, ref) {
-    const sql = buildSelect(session.conn.engine, ref, { limit: OBJECT_EXPORT_LIMIT, offset: 0 });
-    const results = await session.driver.runQuery(session.ctx, sql, { timeoutMs: session.timeoutMs });
-    return results[0];
-}
-
-export async function exportTable(session, ref, format) {
-    setBusy("Exporting…");
-    try {
-        const result = await fetchAll(session, ref);
-        await exportResult(session.conn.engine, ref, result, format);
-    }
-    catch (error) {
-        toast(error.message, "warning");
-    }
-}
-
-export async function importCsv(session, ref) {
-    const folder = await muxy.dialog.pickFolder({ title: "Folder containing the CSV" });
-    if (!folder)
-        return;
-    const name = await muxy.dialog.prompt({ title: "CSV file", message: "File name", placeholder: "data.csv" });
-    if (!name)
-        return;
-    const path = `${folder}/${name}`;
-    try {
-        await session.driver.importCsv(session.ctx, ref, path, { header: true });
-        toast("CSV imported", "success");
-    }
-    catch (error) {
-        toast(error.message, "warning");
-    }
-}
-
 export async function dumpDatabase(session) {
     const conn = session.conn;
     const stamp = new Date(Date.now()).toISOString().replace(/[:.]/g, "-");

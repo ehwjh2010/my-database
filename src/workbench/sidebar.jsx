@@ -166,7 +166,7 @@ function TableTreeNode({ table, tableRef, active, loadTableInfo, focusTableColum
     );
 }
 
-export function Sidebar({ onNewTable, onTransfer }) {
+export function Sidebar({ onNewTable, onExportDatabase }) {
     const { session, tables, activeKey, selectTable, catalogError, loadTableInfo, focusTableColumn, schemaEpoch } = useSession();
     const sidebar = useRef(null);
     const dragging = useRef(false);
@@ -193,8 +193,8 @@ export function Sidebar({ onNewTable, onTransfer }) {
                         <Icon name="plus" />
                     </button>
                 ) : null}
-                {onTransfer ? (
-                    <button className="icon-btn" title="Import / Export" onClick={onTransfer}>
+                {onExportDatabase ? (
+                    <button className="icon-btn" title="Export database" aria-label="Export database" onClick={onExportDatabase}>
                         <Icon name="download" />
                     </button>
                 ) : null}

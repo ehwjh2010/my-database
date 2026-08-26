@@ -27,7 +27,7 @@ globalThis.muxy = {
     },
 };
 
-const { exportActive } = await import("../src/transfer/transfer.js");
+const { dumpDatabase, exportActive } = await import("../src/transfer/transfer.js");
 
 test("exportActive exports the active SQL tab result with its SQL filename", async () => {
     writes.length = 0;
@@ -114,4 +114,21 @@ test("exportResult returns EXPORT_FAILED with the write error", async () => {
     assert.equal(writes.length, 1);
     assert.match(toasts.at(-1).body, /EXPORT_FAILED: disk full/);
     writeFails = false;
+});
+
+test("database dump keeps the active connection context and driver timeout", async () => {
+    const calls = [];
+    folder = "/tmp/exports";
+    fileName = "database.sql";
+
+    await dumpDatabase({
+        conn: { name: "App DB" },
+        ctx: { database: "app", schema: "public" },
+        driver: { async dumpDatabase(ctx, path, options) { calls.push({ ctx, path, options }); } },
+    });
+
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].ctx, { database: "app", schema: "public" });
+    assert.equal(calls[0].path, "/tmp/exports/database.sql");
+    assert.deepEqual(calls[0].options, { timeoutMs: 600000 });
 });
