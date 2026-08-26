@@ -19,7 +19,7 @@ function InsertCell({ insert, column, editing, onOpenEditor, onCommit, onCancel 
     );
 }
 
-export function InsertRows({ inserts, columns, editing, onEdit, onCommit, onRemove }) {
+export function InsertRows({ inserts, columns, editing, mutationLocked, onEdit, onCommit, onRemove }) {
     return inserts.map((insert) => (
         <tr key={insert.id} className="row-insert">
             <td className="gutter" title="Remove this new row" onClick={() => onRemove(insert.id)}>
@@ -31,7 +31,7 @@ export function InsertRows({ inserts, columns, editing, onEdit, onCommit, onRemo
                     insert={insert}
                     column={column}
                     editing={editing && editing.kind === "insert" && editing.insertId === insert.id && editing.column === column.name}
-                    onOpenEditor={() => onEdit({ kind: "insert", insertId: insert.id, column: column.name })}
+                    onOpenEditor={() => { if (!mutationLocked) onEdit({ kind: "insert", insertId: insert.id, column: column.name }); }}
                     onCommit={(next) => onCommit(insert, column, next)}
                     onCancel={() => onEdit(null)}
                 />

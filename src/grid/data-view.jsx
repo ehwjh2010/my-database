@@ -6,7 +6,7 @@ import { buildCount } from "../lib/sql/select-builder.js";
 import { buildChangeScript } from "../lib/sql/change-script.js";
 import { copyResult } from "../transfer/transfer.js";
 import { copyToClipboard } from "../lib/clipboard.js";
-import { setEdit, toggleDelete, addInsert, removeInsert, clearChanges } from "./pending-changes.js";
+import { setEdit, toggleDelete, addInsert, removeInsert, clearChanges, isDeleted } from "./pending-changes.js";
 import { useTablePage } from "./use-table-page.js";
 import { DataGrid } from "./data-grid.jsx";
 import { FilterBar } from "./filter-bar.jsx";
@@ -63,16 +63,29 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
     };
 
     const page = useTablePage(session, tableRef, gridState, activeWorkspaceKey, runtime.dataRevision, workspaceId);
+    const selectionIsCurrent = Boolean(selectedCell
+        && selectedCell.workspaceId === workspaceId
+        && selectedCell.objectKey === activeWorkspaceKey
+        && selectedCell.dataRevision === runtime.dataRevision
+        && page.displayRows?.[selectedCell.row]
+        && page.changes
+        && !isDeleted(page.changes, selectedCell.keyValues));
 
     const toolbarInput = {
         hasObject: Boolean(tableRef),
         pageState: page.loading ? "loading" : page.error ? "error" : page.displayRows.length ? "ready" : "empty",
         editable: Boolean(page.editable),
-        hasStableSelection: Boolean(selectedCell && page.displayRows[selectedCell.row]),
+        hasStableSelection: selectionIsCurrent,
         pendingCount: page.changes ? changeCount(page.changes) : 0,
         operationKind: dataOperation?.kind || "idle",
         importSupported: Boolean(session.driver?.importCsv),
     };
+
+    const mutationLocked = toolbarInput.operationKind === "apply" || toolbarInput.operationKind === "import";
+
+    useEffect(() => {
+        setSelectedCell(null);
+    }, [activeWorkspaceKey, runtime.dataRevision, gridState.page, gridState.rawWhere, gridState.rawOrderBy, session.pageSize]);
 
     useEffect(() => {
         if (!page.loading && !page.error)
@@ -88,7 +101,7 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
             if (column >= 0) {
                 const row = page.displayRows.length ? 0 : null;
                 if (row !== null)
-                    setSelectedCell({ row, column });
+                    setSelectedCell({ row, column, workspaceId, objectKey: activeWorkspaceKey, dataRevision: runtime.dataRevision, keyValues: page.keyValuesFor(row) });
                 setScrollTarget({ token: columnFocus.token, row, column });
             }
         }
@@ -190,6 +203,8 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
     };
 
     const addRow = () => {
+        if (mutationLocked || !page.editable)
+            return;
         const insert = addInsert(model);
         bumpPendingChanges();
         setEditing({ kind: "insert", insertId: insert.id, column: page.displayColumns[0]?.name });
@@ -201,6 +216,8 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
         if (id === "new-row")
             return addRow();
         if (id === "discard-all") {
+            if (mutationLocked || !page.editable)
+                return;
             clearChanges(model);
             return bumpPendingChanges();
         }
@@ -210,7 +227,7 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
             return openReview(true);
         if (id === "ddl")
             return setView("structure");
-        if (id === "delete-row" && selectedCell && page.displayRows[selectedCell.row]) {
+        if (id === "delete-row" && !mutationLocked && selectionIsCurrent) {
             changes.toggleDelete(page.keyValuesFor(selectedCell.row));
             bumpPendingChanges();
             return setSelectedCell(null);
@@ -238,6 +255,7 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
                     page={page}
                     changes={changes}
                     editable={page.editable}
+                    mutationLocked={mutationLocked}
                     onChange={bumpPendingChanges}
                     editing={editing}
                     setEditing={setEditing}
@@ -245,7 +263,13 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
                     onCopyColumnName={copyText}
                     onViewCell={(value) => setViewerValue(value)}
                     selectedCell={selectedCell}
-                    onSelectCell={setSelectedCell}
+                    onSelectCell={(cell) => {
+                        if (!cell) {
+                            setSelectedCell(null);
+                            return;
+                        }
+                        setSelectedCell({ ...cell, workspaceId, objectKey: activeWorkspaceKey, dataRevision: runtime.dataRevision, keyValues: page.keyValuesFor(cell.row) });
+                    }}
                     scrollTarget={scrollTarget}
                     sortDirections={sortDirections}
                     onSort={(column) => {

@@ -15,7 +15,7 @@ function normalizeInput(value) {
     return String(value);
 }
 
-export function DataGrid({ page, changes, editable, onChange, editing, setEditing, onContextItems, onCopyColumnName, onViewCell, selectedCell, onSelectCell, scrollTarget, sortDirections, onSort }) {
+export function DataGrid({ page, changes, editable, mutationLocked, onChange, editing, setEditing, onContextItems, onCopyColumnName, onViewCell, selectedCell, onSelectCell, scrollTarget, sortDirections, onSort }) {
     const { displayColumns, displayRows, keyValuesFor } = page;
     const [menu, setMenu] = useState(null);
     const gridRef = useRef(null);
@@ -32,6 +32,8 @@ export function DataGrid({ page, changes, editable, onChange, editing, setEditin
     }, [scrollTarget]);
 
     const commitRowEdit = (r, column, original, next) => {
+        if (mutationLocked)
+            return setEditing(null);
         if (next !== undefined)
             changes.setEdit(keyValuesFor(r), column.name, normalizeInput(next), original);
         onChange();
@@ -39,6 +41,8 @@ export function DataGrid({ page, changes, editable, onChange, editing, setEditin
     };
 
     const commitInsertEdit = (insert, column, next) => {
+        if (mutationLocked)
+            return setEditing(null);
         if (next !== undefined) {
             setInsertCell(changes.model, insert.id, column.name, normalizeInput(next));
         }
@@ -50,7 +54,7 @@ export function DataGrid({ page, changes, editable, onChange, editing, setEditin
         const column = displayColumns[c];
         const value = displayRows[r][c];
         const items = onContextItems(value, r, column);
-        if (editable) {
+        if (editable && !mutationLocked) {
             items.push({ separator: true });
             items.push({
                 label: "Set NULL",
@@ -118,7 +122,7 @@ export function DataGrid({ page, changes, editable, onChange, editing, setEditin
                         return (
                             <tr key={r} className={deleted ? "row-deleted" : undefined}>
                                 {editable ? (
-                                    <td className="gutter" title="Click to mark for deletion" onClick={() => { changes.toggleDelete(keyValuesFor(r)); onChange(); }}>
+                                    <td className="gutter" title="Click to mark for deletion" onClick={() => { if (!mutationLocked) { changes.toggleDelete(keyValuesFor(r)); onChange(); } }}>
                                         {r + 1}
                                     </td>
                                 ) : null}
@@ -151,7 +155,7 @@ export function DataGrid({ page, changes, editable, onChange, editing, setEditin
                                             className={[edit.edited ? "cell-edited" : "", selected ? "cell-selected" : ""].filter(Boolean).join(" ") || undefined}
                                             title={info.title}
                                             onClick={() => selectCell(r, c)}
-                                            onDoubleClick={editable ? () => setEditing({ kind: "row", row: r, column: column.name }) : () => onViewCell(value)}
+                                            onDoubleClick={editable && !mutationLocked ? () => setEditing({ kind: "row", row: r, column: column.name }) : () => onViewCell(value)}
                                             onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, items: rowContextItems(r, c) }); }}
                                         >
                                             {info.null ? <span className="null-badge">NULL</span> : info.text}
@@ -166,9 +170,10 @@ export function DataGrid({ page, changes, editable, onChange, editing, setEditin
                             inserts={changes.model.inserts}
                             columns={displayColumns}
                             editing={editing}
+                            mutationLocked={mutationLocked}
                             onEdit={setEditing}
                             onCommit={commitInsertEdit}
-                            onRemove={(id) => { changes.removeInsert(id); onChange(); }}
+                            onRemove={(id) => { if (!mutationLocked) { changes.removeInsert(id); onChange(); } }}
                         />
                     ) : null}
                 </tbody>
