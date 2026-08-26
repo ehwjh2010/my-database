@@ -236,10 +236,34 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
             return openReview(true);
         if (id === "ddl")
             return setView("structure");
+        if (id === "import")
+            return importCsv();
         if (id === "delete-row" && !mutationLocked && selectionIsCurrent) {
             changes.toggleDelete(page.keyValuesFor(selectedCell.row));
             bumpPendingChanges();
             return setSelectedCell(null);
+        }
+    };
+
+    const importCsv = async () => {
+        if (mutationLocked || !page.editable || toolbarInput.pendingCount > 0 || !toolbarInput.importSupported)
+            return;
+        const operation = coordinator.startDataOperation(workspaceId, "import", { objectRef: tableRef, pendingRevision: model.revision });
+        if (operation.error)
+            return toast(operation.error, "warning");
+        try {
+            const path = await muxy.dialog.pickFile({ title: "Choose CSV file", types: ["public.comma-separated-values-text"] });
+            if (!path)
+                return;
+            await session.driver.importCsv(session.ctx, tableRef, path, { header: true });
+            if (session.registry.byId[workspaceId]?.key === activeWorkspaceKey && operation.token === session.workspaceOwners.get(activeWorkspaceKey)?.operation?.token) {
+                invalidateDataRuntime(runtime);
+                toast("CSV imported", "success");
+            }
+        } catch (error) {
+            toast(error.message, "warning");
+        } finally {
+            coordinator.settleDataOperation(operation);
         }
     };
 
