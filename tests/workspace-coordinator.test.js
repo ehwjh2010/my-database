@@ -5,7 +5,6 @@ import { createWorkspaceCoordinator } from "../src/workbench/workspace-coordinat
 import { isCurrentDataCount, objectCacheKey } from "../src/workbench/workspace-state.js";
 import { nextDataRequest } from "../src/workbench/data-runtime.js";
 import { targetIsCurrent } from "../src/grid/use-table-page.js";
-import { createTableFromSql } from "../src/structure/table-designer-actions.js";
 
 function stubSession(overrides = {}) {
     return {
@@ -123,13 +122,78 @@ test("focusTableColumn reuses workspaces, switches to data, and emits a new toke
 
     assert.equal(first.created, true);
     assert.equal(second.created, false);
-    assert.deepEqual(session.registry.order, [first.workspaceId]);
+    assert.equal(session.registry.order[0], first.workspaceId);
     assert.equal(session.registry.byId[first.workspaceId].view, "data");
     assert.ok(second.token > first.token);
     assert.ok(third.token > second.token);
     assert.deepEqual(requests.slice(0, 3).map((request) => request.token), [first.token, second.token, third.token]);
     assert.equal(coordinator.consumeColumnFocus(third.token), true);
     assert.equal(coordinator.consumeColumnFocus(third.token), false);
+});
+
+test("openOrActivate opens data and DDL as independent tabs for the same object", () => {
+    const session = stubSession();
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters());
+    const ref = { database: "app", schema: "main", table: "orders", kind: "table" };
+
+    const data = coordinator.openOrActivate(ref);
+    const ddl = coordinator.openOrActivate(ref, "structure");
+    const again = coordinator.openOrActivate(ref, "structure");
+    const back = coordinator.openOrActivate(ref);
+
+    assert.equal(data.created, true);
+    assert.equal(ddl.created, true);
+    assert.notEqual(data.workspaceId, ddl.workspaceId);
+    assert.deepEqual(again, { workspaceId: ddl.workspaceId, created: false, activeId: ddl.workspaceId });
+    assert.deepEqual(back, { workspaceId: data.workspaceId, created: false, activeId: data.workspaceId });
+    assert.equal(session.registry.byId[data.workspaceId].view, "data");
+    assert.equal(session.registry.byId[ddl.workspaceId].view, "structure");
+    assert.deepEqual(session.registry.order, [data.workspaceId, ddl.workspaceId]);
+    assert.equal(session.dataRuntime.has(session.registry.byId[data.workspaceId].key), true);
+    assert.equal(session.dataRuntime.has(session.registry.byId[ddl.workspaceId].key), false);
+    assert.deepEqual(coordinator.openOrActivate(ref, "charts"), { error: "INVALID_VIEW" });
+});
+
+test("closing a data tab leaves the DDL tab and structure snapshot", () => {
+    const session = stubSession();
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters());
+    const ref = { database: "app", schema: "main", table: "orders", kind: "table" };
+    const data = coordinator.openOrActivate(ref);
+    const ddl = coordinator.openOrActivate(ref, "structure");
+    const dataKey = session.registry.byId[data.workspaceId].key;
+    const objectKey = objectCacheKey(ref);
+    session.structureCache.set(objectKey, { info: { columns: [] }, ddl: "CREATE TABLE orders(id)" });
+
+    const result = coordinator.close(data.workspaceId);
+
+    assert.deepEqual(result, { outcome: "closed", activeId: ddl.workspaceId });
+    assert.deepEqual(session.registry.order, [ddl.workspaceId]);
+    assert.equal(session.registry.byId[ddl.workspaceId].view, "structure");
+    assert.equal(session.dataRuntime.has(dataKey), false);
+    assert.equal(session.changes.has(dataKey), false);
+    assert.deepEqual(session.structureCache.get(objectKey), { info: { columns: [] }, ddl: "CREATE TABLE orders(id)" });
+});
+
+test("closing a DDL tab leaves pending data changes", () => {
+    const session = stubSession();
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters());
+    const ref = { database: "app", schema: "main", table: "orders", kind: "table" };
+    const data = coordinator.openOrActivate(ref);
+    const ddl = coordinator.openOrActivate(ref, "structure");
+    const dataKey = session.registry.byId[data.workspaceId].key;
+    const objectKey = objectCacheKey(ref);
+    const snapshot = { info: { columns: [] }, ddl: "CREATE TABLE orders(id)" };
+    session.structureCache.set(objectKey, snapshot);
+    session.changes.get(dataKey).inserts.push({ id: 1 });
+
+    const result = coordinator.close(ddl.workspaceId);
+
+    assert.deepEqual(result, { outcome: "closed", activeId: data.workspaceId });
+    assert.deepEqual(session.registry.order, [data.workspaceId]);
+    assert.equal(session.registry.byId[data.workspaceId].view, "data");
+    assert.equal(session.dataRuntime.has(dataKey), true);
+    assert.equal(session.changes.get(dataKey).inserts.length, 1);
+    assert.equal(session.structureCache.has(objectKey), false);
 });
 
 test("openOrActivate creates a workspace with data view and stores it in the session registry", () => {
@@ -443,10 +507,11 @@ test("changeView returns to the object surface after Console", () => {
     const { workspaceId } = coordinator.openOrActivate({ database: "app", schema: "main", table: "orders" });
 
     session.surface = "console";
-    coordinator.changeView(workspaceId, "structure");
+    const changed = coordinator.changeView(workspaceId, "structure");
 
     assert.equal(session.surface, "object");
-    assert.equal(session.registry.byId[workspaceId].view, "structure");
+    assert.equal(session.registry.byId[workspaceId].view, "data");
+    assert.equal(session.registry.byId[changed.workspaceId].view, "structure");
 });
 
 test("changeView remains on the object surface when a Console manifest load finishes late", async () => {
@@ -471,7 +536,9 @@ test("changeView remains on the object surface when a Console manifest load fini
     await entering;
 
     assert.equal(session.surface, "object");
-    assert.equal(session.registry.byId[workspaceId].view, "structure");
+    assert.equal(session.registry.byId[workspaceId].view, "data");
+    assert.equal(session.registry.order.length, 2);
+    assert.equal(session.registry.byId[session.registry.order[1]].view, "structure");
     assert.deepEqual(session.sqlRegistry, { order: [], activeId: null, byId: {} });
 });
 
@@ -821,121 +888,6 @@ test("catalog-only refresh keeps the existing workspace order and active object"
     assert.deepEqual(session.registry.order, beforeOrder);
     assert.equal(session.registry.activeId, beforeActiveId);
     assert.equal(session.registry.byId[customers.workspaceId].ref.table, "customers");
-});
-
-test("table creation success refreshes only the shared catalog", async () => {
-    const session = stubSession({
-        driver: {
-            async runQuery() {},
-            async listTables() {
-                return [
-                    { name: "orders", kind: "table" },
-                    { name: "invoices", kind: "table" },
-                ];
-            },
-            async allColumns() {
-                return { orders: ["id"], invoices: ["id"] };
-            },
-            async tableInfo() {
-                return { columns: [], primaryKey: [], rowid: false };
-            },
-        },
-    });
-    const coordinator = createWorkspaceCoordinator(session, stubAdapters());
-    session.coordinator = coordinator;
-    const orders = coordinator.openOrActivate({ database: "app", schema: "main", table: "orders" });
-    coordinator.openOrActivate({ database: "app", schema: "main", table: "customers" });
-    coordinator.setActive(orders.workspaceId);
-    const beforeOrder = [...session.registry.order];
-    const beforeActiveId = session.registry.activeId;
-
-    const result = await createTableFromSql({
-        session,
-        sql: "CREATE TABLE invoices (id INTEGER);",
-        onClose: () => {},
-        toast: () => {},
-    });
-    await result.done;
-
-    assert.equal(result.outcome, "created");
-    assert.deepEqual(session.tables, [
-        { name: "orders", kind: "table" },
-        { name: "invoices", kind: "table" },
-    ]);
-    assert.deepEqual(session.registry.order, beforeOrder);
-    assert.equal(session.registry.activeId, beforeActiveId);
-});
-
-test("table creation failure surfaces the actual error without changing workspaces", async () => {
-    const expected = new Error("syntax error near invoices");
-    const toasts = [];
-    let refreshed = false;
-    const session = stubSession({
-        driver: {
-            async runQuery() {
-                throw expected;
-            },
-        },
-    });
-    const coordinator = createWorkspaceCoordinator(session, stubAdapters());
-    session.coordinator = { initiateCatalogLoad: () => { refreshed = true; } };
-    const orders = coordinator.openOrActivate({ database: "app", schema: "main", table: "orders" });
-    coordinator.setActive(orders.workspaceId);
-    const beforeOrder = [...session.registry.order];
-    const beforeActiveId = session.registry.activeId;
-
-    const result = await createTableFromSql({
-        session,
-        sql: "CREATE TABLE invoices (id INTEGER);",
-        onClose: () => {
-            throw new Error("should not close designer");
-        },
-        toast: (message, kind) => toasts.push([message, kind]),
-    });
-
-    assert.equal(result.outcome, "error");
-    assert.equal(result.error, expected);
-    assert.equal(refreshed, false);
-    assert.deepEqual(toasts, [["syntax error near invoices", "warning"]]);
-    assert.deepEqual(session.registry.order, beforeOrder);
-    assert.equal(session.registry.activeId, beforeActiveId);
-});
-
-test("stale table creation completion cannot update the current catalog", async () => {
-    let finishCreate;
-    let operationCtx;
-    let refreshed = false;
-    let closed = false;
-    const session = stubSession({
-        driver: {
-            runQuery(ctx) {
-                operationCtx = ctx;
-                return new Promise((resolve) => { finishCreate = resolve; });
-            },
-        },
-    });
-    session.coordinator = { initiateCatalogLoad: () => { refreshed = true; } };
-
-    const pending = createTableFromSql({
-        session,
-        sql: "CREATE TABLE invoices (id INTEGER);",
-        onClose: () => {
-            closed = true;
-        },
-        toast: () => {
-            throw new Error("should not toast stale create");
-        },
-    });
-    session.ctx = { database: "other", schema: "main" };
-    session.scopeGeneration += 1;
-    finishCreate();
-    const result = await pending;
-
-    assert.equal(result.outcome, "stale");
-    assert.equal(refreshed, false);
-    assert.equal(closed, false);
-    assert.deepEqual(operationCtx, { database: "app", schema: "main" });
-    assert.deepEqual(session.tables, []);
 });
 
 test("confirmed scope change clears workspaces before loading the new catalog", async () => {
@@ -2015,6 +1967,25 @@ test("refreshData rejects during apply or import before asking for confirmation"
     assert.equal(confirms, 0);
 });
 
+test("refreshData after a settled import clears the workspace data cache", async () => {
+    const session = stubSession();
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters());
+    const { workspaceId } = coordinator.openOrActivate({ database: "app", schema: "main", table: "orders", kind: "table" });
+    const key = session.registry.byId[workspaceId].key;
+    const runtime = session.dataRuntime.get(key);
+    runtime.cache = { displayRows: [["old"]] };
+    session.dataCache.set(key, runtime.cache);
+    const operation = coordinator.startDataOperation(workspaceId, "import");
+    assert.deepEqual(await coordinator.refreshData(workspaceId), { error: "DATA_MUTATION_IN_PROGRESS" });
+    coordinator.settleDataOperation(operation);
+
+    const result = await coordinator.refreshData(workspaceId);
+
+    assert.deepEqual(result, { outcome: "started" });
+    assert.equal(runtime.cache, null);
+    assert.equal(session.dataCache.has(key), false);
+});
+
 test("refreshData returns STALE_WORKSPACE for a non-existent workspace", async () => {
     const session = stubSession();
     const coordinator = createWorkspaceCoordinator(session, stubAdapters());
@@ -2043,20 +2014,41 @@ test("each workspace restores its own view across activations without reordering
     const customers = coordinator.openOrActivate({ database: "app", schema: "main", table: "customers" });
     const invoices = coordinator.openOrActivate({ database: "app", schema: "main", table: "invoices" });
 
-    coordinator.changeView(customers.workspaceId, "structure");
+    const customersDdl = coordinator.openOrActivate({ database: "app", schema: "main", table: "customers" }, "structure");
     coordinator.changeView(invoices.workspaceId, "query");
 
     coordinator.setActive(orders.workspaceId);
     assert.equal(coordinator.getActive().view, "data");
     coordinator.setActive(customers.workspaceId);
+    assert.equal(coordinator.getActive().view, "data");
+    coordinator.setActive(customersDdl.workspaceId);
     assert.equal(coordinator.getActive().view, "structure");
     coordinator.setActive(invoices.workspaceId);
     assert.equal(coordinator.getActive().view, "query");
     coordinator.setActive(orders.workspaceId);
     assert.equal(coordinator.getActive().view, "data");
 
-    assert.deepEqual(session.registry.order, [orders.workspaceId, customers.workspaceId, invoices.workspaceId]);
+    assert.deepEqual(session.registry.order, [orders.workspaceId, customers.workspaceId, invoices.workspaceId, customersDdl.workspaceId]);
     assert.equal(session.registry.activeId, orders.workspaceId);
-    assert.equal(session.registry.byId[customers.workspaceId].view, "structure");
+    assert.equal(session.registry.byId[customers.workspaceId].view, "data");
+    assert.equal(session.registry.byId[customersDdl.workspaceId].view, "structure");
     assert.equal(session.registry.byId[invoices.workspaceId].view, "query");
+});
+
+test("onObjectDeleted closes data and DDL tabs for the same object", async () => {
+    const session = stubSession();
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters());
+    const ref = { database: "app", schema: "main", table: "orders", kind: "table" };
+    const data = coordinator.openOrActivate(ref);
+    const ddl = coordinator.openOrActivate(ref, "structure");
+    coordinator.openOrActivate({ database: "app", schema: "main", table: "customers" });
+    session.structureCache.set(objectCacheKey(ref), { info: { columns: [] }, ddl: "CREATE TABLE orders(id)" });
+
+    const result = await coordinator.onObjectDeleted(ref);
+
+    assert.equal(result.closedWorkspaceId, data.workspaceId);
+    assert.equal(session.registry.byId[data.workspaceId], undefined);
+    assert.equal(session.registry.byId[ddl.workspaceId], undefined);
+    assert.equal(session.structureCache.has(objectCacheKey(ref)), false);
+    assert.deepEqual(session.registry.order.length, 1);
 });

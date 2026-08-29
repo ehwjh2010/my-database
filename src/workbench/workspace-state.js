@@ -81,6 +81,11 @@ export function objectCacheKey({ database, schema, table }) {
     return JSON.stringify([database ?? "", schema ?? "", table]);
 }
 
+export function objectWorkspaceKey(ref, view = "data") {
+    const key = objectCacheKey(ref);
+    return view === "structure" ? `${key}:structure` : key;
+}
+
 export function sameObjectRef(a, b) {
     return (a?.database ?? "") === (b?.database ?? "")
         && (a?.schema ?? "") === (b?.schema ?? "")
@@ -97,7 +102,7 @@ export function workspaceReducer(state, action) {
                 activeId: action.id,
                 byId: {
                     ...state.byId,
-                    [action.id]: { id: action.id, key: action.key, generation: action.generation, ref: Object.freeze({ ...action.ref }), view: "data" },
+                    [action.id]: { id: action.id, key: action.key, generation: action.generation, ref: Object.freeze({ ...action.ref }), view: action.view || "data" },
                 },
             };
         }

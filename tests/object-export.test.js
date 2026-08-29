@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { OBJECT_EXPORT_LIMIT, chooseExportPath, exportCommittedObject } from "../src/transfer/transfer.js";
+import { OBJECT_EXPORT_LIMIT, chooseExportPath, chooseImportPath, exportCommittedObject } from "../src/transfer/transfer.js";
 import { isCurrentDataExport } from "../src/workbench/workspace-state.js";
 
 const ref = { database: "app", schema: "public", table: "orders" };
 
-test("object export serializes CSV, pretty JSON, and qualified SQL inserts from one frozen query", async () => {
-    for (const [format, expected] of [["csv", "id,name\n1,Ada\n"], ["json", "  \"id\": 1"], ["sql", "INSERT INTO \"public\".\"orders\" (\"id\", \"name\") VALUES (1, 'Ada');"]]) {
+test("object export serializes CSV, pretty JSON, and table-only SQL inserts from one frozen query", async () => {
+    for (const [format, expected] of [["csv", "id,name\n1,Ada\n"], ["json", "  \"id\": 1"], ["sql", "INSERT INTO \"orders\" (\"id\", \"name\") VALUES (1, 'Ada');"]]) {
         const calls = [];
         let written;
         const exported = await exportCommittedObject({
@@ -26,6 +26,27 @@ test("object export serializes CSV, pretty JSON, and qualified SQL inserts from 
         assert.equal(written.path, "/tmp/export");
         assert.ok(written.content.includes(expected));
         assert.deepEqual(exported, { rowCount: 1, capped: false });
+    }
+});
+
+test("SQL insert export omits catalog and schema so the dump can load in another database", async () => {
+    for (const [engine, objectRef, expected] of [
+        ["mysql", { database: "source_db", table: "orders" }, "INSERT INTO `orders` (`id`) VALUES (1);"],
+        ["postgres", { database: "source_db", schema: "public", table: "orders" }, 'INSERT INTO "orders" ("id") VALUES (1);'],
+        ["sqlite", { database: "app", schema: "main", table: "orders" }, 'INSERT INTO "orders" ("id") VALUES (1);'],
+    ]) {
+        let written;
+        await exportCommittedObject({
+            driver: { async runQuery() { return [{ columns: [{ name: "id" }], rows: [[1]] }]; } },
+            engine,
+            operationCtx: {},
+            objectRef,
+            format: "sql",
+            path: "/tmp/export",
+            write: async (_path, content) => { written = content; },
+        });
+        assert.equal(written, expected);
+        assert.doesNotMatch(written, /source_db|public|main/);
     }
 });
 
@@ -67,6 +88,36 @@ test("object export currentness requires the frozen workspace, object, scope, an
     assert.equal(isCurrentDataExport(session, operation), true);
     session.workspaceOwners.get("orders").operation = { kind: "export", token: 5 };
     assert.equal(isCurrentDataExport(session, operation), false);
+});
+
+test("csv, json, and sql import paths open a file picker", async () => {
+    const previousMuxy = globalThis.muxy;
+    try {
+        for (const [format, title, chosen] of [
+            ["csv", "Choose CSV file", "/tmp/imports/orders.csv"],
+            ["json", "Choose JSON file", "/tmp/imports/rows.json"],
+            ["sql", "Choose SQL file", "/tmp/imports/orders.sql"],
+        ]) {
+            const calls = [];
+            globalThis.muxy = {
+                dialog: {
+                    async pickFile() { throw new Error("muxy.dialog.pickFile is not a function"); },
+                    async pickFolder() { throw new Error("import must pick a file"); },
+                },
+                async exec(argv) {
+                    calls.push(argv);
+                    assert.equal(argv[0], "osascript");
+                    assert.match(argv[2], /choose file/);
+                    return { exitCode: 0, stdout: `${chosen}\n`, stderr: "" };
+                },
+            };
+            const path = await chooseImportPath(format);
+            assert.equal(path, chosen);
+            assert.equal(calls[0][3], title);
+        }
+    } finally {
+        globalThis.muxy = previousMuxy;
+    }
 });
 
 test("choosing no destination settles before any query or write", async () => {

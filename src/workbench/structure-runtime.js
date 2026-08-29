@@ -12,7 +12,7 @@ export function isCurrentStructureRead(session, read) {
         return false;
     if ((session.scopeGeneration || 0) !== read.ownership.scopeEpoch)
         return false;
-    const owner = session.workspaceOwners?.get(entry.key);
+    const owner = session.workspaceOwners?.get(objectCacheKey(entry.ref));
     return owner?.structureRequest === read.structureToken;
 }
 
@@ -44,4 +44,5 @@ export function cachedStructureSnapshot(session, key) {
 export function invalidateStructureSnapshot(session, key) {
     session.structureCache?.delete(key);
     session.infoCache?.delete(key);
+    session.structureRevision = (session.structureRevision || 0) + 1;
 }

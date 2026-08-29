@@ -1,4 +1,5 @@
 import { run } from "../exec.js";
+import { writeDumpPart } from "../secure-file.js";
 import { detect as detectBinary, firstAvailable } from "../cli-detect.js";
 import { ensureMyCnfFile } from "../cred-file.js";
 import { quoteIdent, quoteLiteral } from "../sql/quote.js";
@@ -77,7 +78,7 @@ export function makeMysqlDriver(engine, binaries) {
 
     return {
         engine,
-        capabilities: { databases: true, schemas: false, routines: true, sequences: false, triggers: true, importCsv: true, explain: true, rowid: false },
+        capabilities: { databases: true, schemas: false, routines: true, sequences: false, triggers: true, importData: true, explain: true, rowid: false },
         dialect: { explainPrefix: "EXPLAIN", cmDialect: engine === "mariadb" ? "MariaSQL" : "MySQL" },
 
         detect: () => detectBinary(binaries[0]),
@@ -180,25 +181,35 @@ export function makeMysqlDriver(engine, binaries) {
             return result.rows[0]?.[1] || "";
         },
 
-        async importCsv(ctx, ref, filePath, opts = {}) {
-            const sql = `LOAD DATA LOCAL INFILE ${quoteLiteral(engine, filePath)} INTO TABLE ${quoteIdent(engine, ref.table)} FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"' LINES TERMINATED BY '\\n'${opts.header ? " IGNORE 1 LINES" : ""}`;
-            await exec(ctx, ["--local-infile=1", "-e", sql], opts);
-        },
-
         async dumpDatabase(ctx, outPath, opts = {}) {
             const dumpBin = await firstAvailable(engine === "mariadb" ? ["mariadb-dump", "mysqldump"] : ["mysqldump"]);
             if (!dumpBin)
                 throw new Error(`${engine === "mariadb" ? "mariadb-dump" : "mysqldump"} not found`);
             const net = ctx.conn.net;
             const credFile = await ensureMyCnfFile(ctx);
+            const database = ctx.database || net.database;
             const argv = [
-                dumpBin, `--defaults-extra-file=${credFile}`, "--protocol=TCP", `--result-file=${outPath}`,
+                dumpBin, `--defaults-extra-file=${credFile}`, "--protocol=TCP",
                 "-h", ctx.endpoint?.host || net.host,
                 "-P", String(ctx.endpoint?.port || net.port || 3306),
                 "-u", net.user,
-                ctx.database || net.database,
+                database,
+                ...(opts.table ? [opts.table] : []),
             ];
-            await run(argv, { timeoutMs: opts.timeoutMs || 600000 });
+            const sql = await run(argv, { timeoutMs: opts.timeoutMs || 600000 });
+            await writeDumpPart(outPath, sql.endsWith("\n") ? sql : `${sql}\n`, Boolean(opts.append));
+        },
+
+        async importDatabase(ctx, dumpPath, opts = {}) {
+            await exec(ctx, ["-e", `source ${dumpPath}`], { timeoutMs: opts.timeoutMs || 600000 });
+        },
+
+        async runBatch(ctx, sql, opts = {}) {
+            await exec(ctx, ["-e", sql], opts);
+        },
+
+        async runBatch(ctx, sql, opts = {}) {
+            await exec(ctx, ["-e", sql], opts);
         },
 
         async allColumns(ctx) {

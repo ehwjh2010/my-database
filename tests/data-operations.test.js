@@ -53,12 +53,14 @@ test("toolbar projection keeps nine commands and reports busy and disabled state
         importSupported: true,
     });
 
-    assert.deepEqual(toolbar.commands.map((command) => command.id), ["refresh", "new-row", "delete-row", "discard-all", "review-dml", "apply", "ddl", "import", "export"]);
+    assert.deepEqual(toolbar.commands.map((command) => command.id), ["refresh", "new-row", "delete-row", "revert-selected", "review-dml", "apply", "ddl", "import", "export"]);
     assert.equal(toolbar.mutationLocked, true);
     assert.equal(toolbar.byId.apply.busy, true);
     assert.equal(toolbar.byId.apply.icon, "clock");
     assert.equal(toolbar.byId.refresh.disabledReason, "DATA_MUTATION_IN_PROGRESS");
     assert.equal(toolbar.byId.ddl.enabled, true);
+    assert.equal(toolbar.byId["review-dml"].icon, "eye-pending");
+    assert.equal(toolbar.byId["review-dml"].label, "Preview Pending Changes");
     assert.equal(toolbar.pendingLabel, "2 pending");
 });
 
@@ -96,7 +98,65 @@ test("toolbar projection preserves export-time editing and hides only zero pendi
     assert.equal(toolbar.byId["new-row"].enabled, true);
     assert.equal(toolbar.byId.apply.disabledReason, "DATA_OPERATION_IN_PROGRESS");
     assert.equal(toolbar.byId.export.busy, true);
+    assert.equal(toolbar.byId["review-dml"].icon, "eye");
     assert.equal(toolbar.pendingLabel, null);
+    assert.equal(toolbar.transferProgress, null);
+});
+
+test("toolbar projects import and export transfer progress independently of the busy clock", () => {
+    const running = deriveDataToolbar({
+        hasObject: true,
+        pageState: "ready",
+        editable: true,
+        hasStableSelection: true,
+        pendingCount: 0,
+        operationKind: "export",
+        importSupported: true,
+        transferProgress: { kind: "export", status: "running" },
+    });
+    const done = deriveDataToolbar({
+        hasObject: true,
+        pageState: "ready",
+        editable: true,
+        hasStableSelection: true,
+        pendingCount: 0,
+        operationKind: "idle",
+        importSupported: true,
+        transferProgress: { kind: "import", status: "done", label: "Data imported" },
+    });
+
+    assert.deepEqual(running.transferProgress, { kind: "export", status: "running", label: "Exporting object", indeterminate: false, percent: 0 });
+    assert.deepEqual(done.transferProgress, { kind: "import", status: "done", label: "Data imported", indeterminate: false, percent: 100 });
+});
+
+test("toolbar projects indeterminate export fetch phase without a percent", () => {
+    const fetching = deriveDataToolbar({
+        hasObject: true,
+        pageState: "ready",
+        editable: true,
+        hasStableSelection: true,
+        pendingCount: 0,
+        operationKind: "export",
+        importSupported: true,
+        transferProgress: { kind: "export", status: "running", label: "Fetching rows…", indeterminate: true },
+    });
+
+    assert.deepEqual(fetching.transferProgress, { kind: "export", status: "running", label: "Fetching rows…", indeterminate: true, percent: 0 });
+});
+
+test("toolbar projects indeterminate export fetch phase without a percent", () => {
+    const fetching = deriveDataToolbar({
+        hasObject: true,
+        pageState: "ready",
+        editable: true,
+        hasStableSelection: true,
+        pendingCount: 0,
+        operationKind: "export",
+        importSupported: true,
+        transferProgress: { kind: "export", status: "running", label: "Fetching rows…", indeterminate: true },
+    });
+
+    assert.deepEqual(fetching.transferProgress, { kind: "export", status: "running", label: "Fetching rows…", indeterminate: true, percent: 0 });
 });
 
 test("toolbar gives an existing export priority over import readiness failures", () => {

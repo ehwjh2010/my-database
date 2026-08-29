@@ -163,20 +163,34 @@ const sqlBracketKeydown = EditorView.domEventHandlers({
     },
 });
 
+function statementRange(node) {
+    const terminator = node.lastChild?.name === ";" ? node.lastChild.from : node.to;
+    return terminator > node.from ? { from: node.from, to: terminator } : null;
+}
+
+function statementContainsCaret(state, range, pos) {
+    if (pos >= range.from && pos <= range.to)
+        return true;
+    const line = state.doc.lineAt(Math.max(range.to - 1, range.from));
+    return pos > range.to && pos <= line.to;
+}
+
 export function sqlStatementAt(state, pos) {
     if (pos == null || !state.doc.length)
         return null;
     const tree = syntaxTree(state);
-    const candidates = [pos, pos - 1, pos + 1].filter((offset, index, values) => offset >= 0 && offset < state.doc.length && values.indexOf(offset) === index);
+    const candidates = [pos, pos - 1, pos + 1].filter((offset, index, values) => offset >= 0 && offset <= state.doc.length && values.indexOf(offset) === index);
     for (const offset of candidates) {
-        let node = tree.resolveInner(offset, -1);
-        while (node && node.name !== "Statement")
-            node = node.parent;
-        if (!node)
-            continue;
-        const terminator = node.lastChild?.name === ";" ? node.lastChild.from : node.to;
-        if (terminator > node.from)
-            return { from: node.from, to: terminator };
+        for (const side of [-1, 1]) {
+            let node = tree.resolveInner(Math.min(offset, state.doc.length), side);
+            while (node && node.name !== "Statement")
+                node = node.parent;
+            if (!node)
+                continue;
+            const range = statementRange(node);
+            if (range && statementContainsCaret(state, range, pos))
+                return range;
+        }
     }
     return null;
 }
@@ -284,8 +298,17 @@ export function selectedSql(view) {
     return null;
 }
 
+function executionSlice(view) {
+    const selection = view.state.selection.main;
+    if (!selection.empty)
+        return { from: selection.from, to: selection.to, selected: true };
+    const statement = sqlStatementAt(view.state, selection.head);
+    return statement ? { from: statement.from, to: statement.to, selected: false } : null;
+}
+
 export function querySql(view) {
-    return selectedSql(view)?.trim() || view.state.doc.toString().trim();
+    const slice = executionSlice(view);
+    return slice ? view.state.sliceDoc(slice.from, slice.to).trim() : "";
 }
 
 function firstSqlOffset(sql, engine) {
@@ -312,16 +335,21 @@ function firstSqlOffset(sql, engine) {
     return 0;
 }
 
-export function queryExecution(view, engine) {
-    const selection = view.state.selection.main;
-    const selected = !selection.empty;
-    const from = selected ? selection.from : 0;
-    const text = selected ? view.state.sliceDoc(selection.from, selection.to) : view.state.doc.toString();
+export function sqlRangeExecution(view, engine, from, to, selected = false) {
+    const text = view.state.sliceDoc(from, to);
     const leading = text.length - text.trimStart().length;
     const sql = text.trim();
     const documentOffset = from + leading;
-    const markerOffset = selected ? selection.from : documentOffset + firstSqlOffset(sql, engine);
-    return { sql, range: { line: view.state.doc.lineAt(markerOffset).number, from: documentOffset } };
+    const markerOffset = selected ? from : documentOffset + firstSqlOffset(sql, engine);
+    const lineAt = Math.min(Math.max(markerOffset, 0), view.state.doc.length);
+    return { sql, range: { line: view.state.doc.lineAt(lineAt).number, from: documentOffset } };
+}
+
+export function queryExecution(view, engine) {
+    const slice = executionSlice(view);
+    if (!slice)
+        return { sql: "", range: { line: view.state.doc.lineAt(view.state.selection.main.head).number, from: view.state.selection.main.head } };
+    return sqlRangeExecution(view, engine, slice.from, slice.to, slice.selected);
 }
 
 function sameMarker(left, right) {

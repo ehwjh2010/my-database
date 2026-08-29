@@ -10,11 +10,12 @@ import { DataView } from "../grid/data-view.jsx";
 import { QueryView } from "../editor/query-view.jsx";
 import { ConsoleView, NewSqlFileModal, RenameSqlFileModal } from "../editor/console-view.jsx";
 import { StructureView } from "../structure/structure-view.jsx";
-import { TableDesignerModal } from "../structure/table-designer.jsx";
-import { DatabaseExportModal } from "../transfer/transfer-menu.jsx";
+import { DatabaseExportModal, DatabaseImportModal } from "../transfer/transfer-menu.jsx";
 import { WorkspaceTabs } from "./workspace-tabs.jsx";
 import { objectCacheKey } from "./workspace-state.js";
 import { sqlFileMenuItems } from "./workspace-chrome.js";
+import { dumpDatabase, restoreDatabase } from "../transfer/transfer.js";
+import { TransferProgressModal } from "../transfer/transfer-progress-modal.jsx";
 import { toast } from "../ui/toast.js";
 import { copyToClipboard } from "../lib/clipboard.js";
 
@@ -35,8 +36,9 @@ function fileErrorMessage(error) {
 
 export function Workbench() {
     const { session, view, surface, ref, order, activeId, byId, activeSqlId, activateWorkspace, closeWorkspace, createAndOpenFile, openSqlFile, enterConsole, setStatus, refreshSchema, schemaEpoch, queryHooksRef, newFileRef, hasDatabase } = useSession();
-    const [designerOpen, setDesignerOpen] = useState(false);
     const [databaseExportOpen, setDatabaseExportOpen] = useState(false);
+    const [databaseImportOpen, setDatabaseImportOpen] = useState(false);
+    const [dumpProgress, setDumpProgress] = useState(null);
     const [newFileOpen, setNewFileOpen] = useState(false);
     const [newFileError, setNewFileError] = useState(null);
     const [renameFile, setRenameFile] = useState(null);
@@ -158,6 +160,20 @@ export function Workbench() {
         return () => window.removeEventListener("pagehide", onHide);
     }, [session]);
 
+    const startDatabaseDump = async () => {
+        if (dumpProgress?.status === "running")
+            return;
+        await dumpDatabase(session, { onProgress: setDumpProgress });
+    };
+
+    const startDatabaseRestore = async () => {
+        if (dumpProgress?.status === "running")
+            return;
+        const restored = await restoreDatabase(session, { onProgress: setDumpProgress });
+        if (restored?.status === "restored")
+            await refreshSchema();
+    };
+
     const main = () => {
         if (surface === "console") {
             const sqlEntry = session.sqlRegistry.byId[activeSqlId];
@@ -170,7 +186,7 @@ export function Workbench() {
         if (!ref)
             return <EmptyState icon="table" description="从左侧选择一张表" />;
         if (view === "structure")
-            return <StructureView key={`${schemaEpoch}:${ref.table}`} session={session} workspaceId={activeId} tableRef={ref} setStatus={setStatus} reloadTables={refreshSchema} />;
+            return <StructureView key={`${schemaEpoch}:${ref.table}`} session={session} workspaceId={activeId} tableRef={ref} />;
         return <DataView key={`${schemaEpoch}:${objectCacheKey(ref)}`} session={session} tableRef={ref} workspaceId={activeId} setStatus={setStatus} />;
     };
 
@@ -178,7 +194,11 @@ export function Workbench() {
         <div className="flex h-full flex-col">
             <Topbar />
             <div className="flex min-h-0 flex-1">
-                <Sidebar onNewTable={() => setDesignerOpen(true)} onExportDatabase={() => setDatabaseExportOpen(true)} />
+                <Sidebar
+                    onImportDatabase={() => setDatabaseImportOpen(true)}
+                    onExportDatabase={() => setDatabaseExportOpen(true)}
+                    dumpProgress={dumpProgress}
+                />
                 <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                     <WorkspaceTabs
                         order={order}
@@ -201,11 +221,20 @@ export function Workbench() {
             <Statusbar />
             {newFileOpen ? <NewSqlFileModal error={newFileError} onClose={() => setNewFileOpen(false)} onSubmit={createFile} /> : null}
             {renameFile ? <RenameSqlFileModal name={renameFile.name} error={renameFileError} onClose={() => setRenameFile(null)} onSubmit={renameFileSubmit} /> : null}
-            {designerOpen ? (
-                <TableDesignerModal session={session} onClose={() => setDesignerOpen(false)} />
-            ) : null}
             {databaseExportOpen ? (
-                <DatabaseExportModal session={session} onClose={() => setDatabaseExportOpen(false)} />
+                <DatabaseExportModal session={session} onClose={() => setDatabaseExportOpen(false)} onDump={startDatabaseDump} />
+            ) : null}
+            {databaseImportOpen ? (
+                <DatabaseImportModal session={session} onClose={() => setDatabaseImportOpen(false)} onRestore={startDatabaseRestore} />
+            ) : null}
+            {dumpProgress ? (
+                <TransferProgressModal
+                    progress={dumpProgress}
+                    onClose={() => {
+                        if (dumpProgress.status !== "running")
+                            setDumpProgress(null);
+                    }}
+                />
             ) : null}
         </div>
     );

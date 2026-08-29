@@ -73,6 +73,20 @@ export function isDeleted(changes, keyValues) {
     return changes.deletes.has(rowKey(keyValues));
 }
 
+export function rowHasPending(changes, keyValues) {
+    const key = rowKey(keyValues);
+    return changes.edits.has(key) || changes.deletes.has(key);
+}
+
+export function revertRow(changes, keyValues) {
+    const key = rowKey(keyValues);
+    const hadEdit = changes.edits.delete(key);
+    const hadDelete = changes.deletes.delete(key);
+    if (hadEdit || hadDelete)
+        changes.revision += 1;
+    return hadEdit || hadDelete;
+}
+
 export function addInsert(changes) {
     const insert = { id: ++changes.insertCounter, cells: new Map() };
     changes.inserts.push(insert);

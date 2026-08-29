@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { EditorState } from "@codemirror/state";
+import { EditorSelection, EditorState } from "@codemirror/state";
 import { PostgreSQL, sql, SQLite } from "@codemirror/lang-sql";
 
 import { queryExecution, querySql, semanticSqlIdentifiers, sqlStatementAt, syncSqlEditorDocument } from "../src/editor/sql-editor.js";
+
+function editor(doc, selection, dialect = SQLite) {
+    return {
+        state: EditorState.create({
+            doc,
+            selection,
+            extensions: [sql({ dialect })],
+        }),
+    };
+}
 
 test("sqlStatementAt returns the complete current statement without its terminator", () => {
     const doc = "SELECT * FROM user_info\n  WHERE id = 10;\n\nUPDATE user_info SET id = 11;";
@@ -14,21 +24,16 @@ test("sqlStatementAt returns the complete current statement without its terminat
 
     assert.deepEqual(sqlStatementAt(state, doc.indexOf("WHERE")), { from: 0, to: firstEnd });
     assert.deepEqual(sqlStatementAt(state, firstEnd), { from: 0, to: firstEnd });
+    assert.deepEqual(sqlStatementAt(state, secondStart), { from: secondStart, to: secondEnd });
     assert.deepEqual(sqlStatementAt(state, doc.length), { from: secondStart, to: secondEnd });
 });
 
-test("querySql uses the non-empty selection or the whole document", () => {
-    const view = {
-        state: {
-            selection: { main: { from: 7, to: 15 } },
-            sliceDoc: (from, to) => from === 7 && to === 15 ? "SELECT 1" : "",
-            doc: { toString: () => "SELECT 1;\nSELECT 2;" },
-        },
-    };
+test("querySql uses the non-empty selection or the current statement", () => {
+    const doc = "SELECT 1;\nSELECT 2;";
 
-    assert.equal(querySql(view), "SELECT 1");
-    view.state.selection.main = { from: 0, to: 0 };
-    assert.equal(querySql(view), "SELECT 1;\nSELECT 2;");
+    assert.equal(querySql(editor(doc, EditorSelection.range(0, 9))), "SELECT 1;");
+    assert.equal(querySql(editor(doc, EditorSelection.cursor(0))), "SELECT 1");
+    assert.equal(querySql(editor(doc, EditorSelection.cursor(doc.indexOf("SELECT 2")))), "SELECT 2");
 });
 
 test("semanticSqlIdentifiers separates loaded tables and columns", () => {
@@ -41,22 +46,20 @@ test("semanticSqlIdentifiers separates loaded tables and columns", () => {
     );
 });
 
-test("queryExecution records the SQL offset and execution line", () => {
-    const text = "\n\nSELECT 1;\nSELECT 2;";
-    const view = {
-        state: {
-            selection: { main: { from: 0, to: 0, empty: true } },
-            sliceDoc: (from, to) => text.slice(from, to),
-            doc: {
-                toString: () => text,
-                lineAt: (offset) => ({ number: text.slice(0, offset).split("\n").length }),
-            },
-        },
-    };
+test("queryExecution runs the current statement or the selection", () => {
+    const text = "SELECT 1;\nSELECT 2;";
+    const second = text.indexOf("SELECT 2");
 
-    assert.deepEqual(queryExecution(view, "sqlite"), { sql: "SELECT 1;\nSELECT 2;", range: { line: 3, from: 2 } });
-    view.state.selection.main = { from: 11, to: 21, empty: false };
-    assert.deepEqual(queryExecution(view, "sqlite"), { sql: "SELECT 2;", range: { line: 3, from: 12 } });
+    assert.deepEqual(queryExecution(editor(text, EditorSelection.cursor(0)), "sqlite"), { sql: "SELECT 1", range: { line: 1, from: 0 } });
+    assert.deepEqual(queryExecution(editor(text, EditorSelection.cursor(second)), "sqlite"), { sql: "SELECT 2", range: { line: 2, from: second } });
+    assert.deepEqual(queryExecution(editor(text, EditorSelection.range(second, text.length)), "sqlite"), { sql: "SELECT 2;", range: { line: 2, from: second } });
+});
+
+test("queryExecution does not run when the caret is outside a statement", () => {
+    const text = "SELECT 1;\n\nSELECT 2;";
+    const view = editor(text, EditorSelection.cursor(text.indexOf("\n\n") + 1));
+
+    assert.equal(queryExecution(view, "sqlite").sql, "");
 });
 
 test("syncSqlEditorDocument replaces a stale editor document once", () => {

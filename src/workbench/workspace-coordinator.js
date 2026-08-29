@@ -3,7 +3,7 @@ import { dataOperationFor, settleDataOperation, startDataOperation } from "./dat
 import { createSqlFile, ensureConsoleFile, getSqlNamespace, listSqlFiles, readSqlFile, renameSqlFile, saveSqlFile, trashSqlFile, validateFileName } from "../lib/sql-files.js";
 import { clearDataRuntime, clearDataRuntimes, dataRuntimeFor, nextDataRequest, refreshDataRuntime } from "./data-runtime.js";
 import { currentDatabase, hasDatabase } from "./state.js";
-import { initialWorkspaceState, objectCacheKey, pendingChangeCountFor, sameObjectRef, workspaceReducer } from "./workspace-state.js";
+import { initialWorkspaceState, objectCacheKey, objectWorkspaceKey, pendingChangeCountFor, sameObjectRef, workspaceReducer } from "./workspace-state.js";
 
 export const WORKSPACE_VIEWS = Object.freeze(["data", "structure", "query"]);
 export const QUERY_MODES = Object.freeze(["execute", "explain"]);
@@ -47,11 +47,6 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
     const isCurrentEntry = (entry) => entryById(entry.id) === entry;
     const captureOperationCtx = () => ({ ...session.ctx });
     const ownershipFor = (entry) => ({ workspaceId: entry.id, scopeEpoch: session.scopeGeneration || 0, generation: entry.generation });
-    const clearWorkspaceRuntime = (key) => {
-        clearDataRuntime(session, key);
-        session.structureCache?.delete(key);
-        session.queryState?.delete(key);
-    };
     const clearSqlSaveTimers = () => {
         for (const owner of session.sqlOwners.values()) {
             if (owner.saveTimer)
@@ -95,12 +90,37 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         adapters.notifyScope?.();
         adapters.notifyCatalog?.();
     };
+    const hasSiblingObjectTab = (entry) => session.registry.order.some((id) => {
+        const other = session.registry.byId[id];
+        return Boolean(other && other.id !== entry.id && sameObjectRef(other.ref, entry.ref));
+    });
     const closeWorkspace = (entry) => {
         if (session.columnFocus?.workspaceId === entry.id) {
             session.columnFocus = null;
             adapters.notifyColumnFocus?.(null);
         }
-        clearWorkspaceRuntime(entry.key);
+        const objectKey = objectCacheKey(entry.ref);
+        const keepSibling = hasSiblingObjectTab(entry);
+        if (entry.view === "structure") {
+            session.structureCache?.delete(objectKey);
+            session.infoCache?.delete(objectKey);
+            if (!keepSibling)
+                session.workspaceOwners?.delete(objectKey);
+        }
+        else {
+            session.queryState?.delete(entry.key);
+            if (keepSibling) {
+                session.dataRuntime?.delete(entry.key);
+                session.dataCache?.delete(entry.key);
+                session.gridState?.delete(entry.key);
+                session.changes?.delete(entry.key);
+            }
+            else {
+                clearDataRuntime(session, entry.key);
+                session.structureCache?.delete(objectKey);
+                session.infoCache?.delete(objectKey);
+            }
+        }
         commit({ type: "CLOSE", id: entry.id });
         adapters.notifyPending?.();
         adapters.notifyData?.();
@@ -592,10 +612,12 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             return request;
         },
 
-        openOrActivate(objectRef) {
+        openOrActivate(objectRef, view = "data") {
             if (!objectRef?.table)
                 return { error: "INVALID_OBJECT_REF" };
-            const key = objectCacheKey(objectRef);
+            if (view !== "data" && view !== "structure")
+                return { error: "INVALID_VIEW" };
+            const key = objectWorkspaceKey(objectRef, view);
             const existingId = session.registry.order.find((id) => session.registry.byId[id]?.key === key);
             if (existingId !== undefined) {
                 session.surface = "object";
@@ -604,12 +626,14 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             }
             const workspaceId = ++session.workspaceIdCounter;
             const generation = ++session.workspaceGenerationCounter;
-            dataRuntimeFor(session, key, objectRef, undefined, workspaceId, generation);
-            if (!(session.queryState instanceof Map))
-                session.queryState = new Map();
-            session.queryState.set(key, { sql: "", results: null, exportContext: null, queryRunning: false, queryError: null, executionMarker: null });
+            if (view === "data") {
+                dataRuntimeFor(session, key, objectRef, undefined, workspaceId, generation);
+                if (!(session.queryState instanceof Map))
+                    session.queryState = new Map();
+                session.queryState.set(key, { sql: "", results: null, exportContext: null, queryRunning: false, queryError: null, executionMarker: null });
+            }
             session.surface = "object";
-            commit({ type: "OPEN", id: workspaceId, key, generation, ref: objectRef });
+            commit({ type: "OPEN", id: workspaceId, key, generation, ref: objectRef, view });
             return { workspaceId, created: true, activeId: session.registry.activeId };
         },
 
@@ -653,10 +677,19 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         changeView(workspaceId, view) {
             if (!WORKSPACE_VIEWS.includes(view))
                 return { error: "INVALID_VIEW" };
-            if (!entryById(workspaceId))
+            const entry = entryById(workspaceId);
+            if (!entry)
                 return STALE_WORKSPACE;
             if (session.surface === "console")
                 session.consoleToken += 1;
+            if (view === "structure" || view === "data") {
+                const opened = coordinator.openOrActivate(entry.ref, view);
+                if (opened.error)
+                    return opened;
+                if (view === "data" && session.registry.byId[opened.workspaceId]?.view !== "data")
+                    commit({ type: "SET_VIEW", id: opened.workspaceId, view: "data" });
+                return { view, workspaceId: opened.workspaceId, registryRevision };
+            }
             session.surface = "object";
             commit({ type: "SET_VIEW", id: workspaceId, view });
             return { view, registryRevision };
@@ -900,7 +933,11 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             const entry = entryById(workspaceId);
             if (!entry)
                 return STALE_WORKSPACE;
-            const owner = session.workspaceOwners.get(entry.key);
+            const objectKey = objectCacheKey(entry.ref);
+            if (!(session.workspaceOwners instanceof Map))
+                session.workspaceOwners = new Map();
+            const owner = session.workspaceOwners.get(objectKey) || { dataRequest: 0, structureRequest: 0 };
+            session.workspaceOwners.set(objectKey, owner);
             owner.structureRequest = (owner.structureRequest || 0) + 1;
             return { operationCtx: captureOperationCtx(), objectRef: entry.ref, ownership: ownershipFor(entry), structureToken: owner.structureRequest };
         },
@@ -917,13 +954,17 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         },
 
         async onObjectDeleted(objectRef) {
-            const workspaceId = session.registry.order.find((id) => sameObjectRef(session.registry.byId[id]?.ref, objectRef));
-            if (workspaceId === undefined)
+            const ids = session.registry.order.filter((id) => sameObjectRef(session.registry.byId[id]?.ref, objectRef));
+            if (!ids.length)
                 return { error: "INVALID_OBJECT_REF" };
-            const entry = session.registry.byId[workspaceId];
-            closeWorkspace(entry);
+            const closedWorkspaceId = ids[0];
+            for (const id of ids) {
+                const entry = session.registry.byId[id];
+                if (entry)
+                    closeWorkspace(entry);
+            }
             const catalog = await coordinator.initiateCatalogLoad();
-            return { closedWorkspaceId: workspaceId, activeId: session.registry.activeId, catalog };
+            return { closedWorkspaceId, activeId: session.registry.activeId, catalog };
         },
 
         async confirmWindowClose() {

@@ -1,7 +1,14 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "../ui/icon.jsx";
+import { ContextMenu } from "../ui/context-menu.jsx";
 import { useSession } from "./session-context.jsx";
 import { objectCacheKey } from "./workspace-state.js";
+import { dumpProgressFor } from "../transfer/transfer.js";
+import { dropObject, ensureObjectWorkspace, truncateTable } from "../structure/structure-actions.js";
+import { IndexDesignerModal } from "../structure/index-designer.jsx";
+import { getPref } from "../lib/storage.js";
+import { invalidateStructureSnapshot } from "./structure-runtime.js";
+import { toast } from "../ui/toast.js";
 
 const DEFAULT_WIDTH = 250;
 const MIN_WIDTH = 180;
@@ -68,7 +75,7 @@ function foreignKeyGroups(foreignKeys) {
     return [...groups.values()];
 }
 
-function TableTreeNode({ table, tableRef, active, loadTableInfo, focusTableColumn, onSelect }) {
+function TableTreeNode({ table, tableRef, active, loadTableInfo, focusTableColumn, onSelect, onContextMenu, infoRevision }) {
     const [expanded, setExpanded] = useState(false);
     const [state, setState] = useState({ loading: false, info: null, error: null });
 
@@ -82,6 +89,12 @@ function TableTreeNode({ table, tableRef, active, loadTableInfo, focusTableColum
             setState({ loading: false, info: null, error });
         }
     };
+
+    useEffect(() => {
+        if (!expanded || !infoRevision)
+            return;
+        load();
+    }, [infoRevision]);
 
     const toggle = (event) => {
         event.stopPropagation();
@@ -106,6 +119,11 @@ function TableTreeNode({ table, tableRef, active, loadTableInfo, focusTableColum
                 aria-current={active ? "page" : undefined}
                 title={table.comment || undefined}
                 onClick={onSelect}
+                onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onContextMenu?.(event, tableRef, table);
+                }}
             >
                 <button type="button" className="tree-disclosure" aria-expanded={expanded} onClick={toggle}>
                     <Icon name={expanded ? "chevronDown" : "chevronRight"} />
@@ -166,12 +184,57 @@ function TableTreeNode({ table, tableRef, active, loadTableInfo, focusTableColum
     );
 }
 
-export function Sidebar({ onNewTable, onExportDatabase }) {
+export function Sidebar({ onExportDatabase, onImportDatabase, dumpProgress }) {
     const { session, tables, activeKey, selectTable, catalogError, loadTableInfo, focusTableColumn, schemaEpoch } = useSession();
     const sidebar = useRef(null);
     const dragging = useRef(false);
     const [filter, setFilter] = useState("");
     const [width, setWidth] = useState(session.sidebarWidth || DEFAULT_WIDTH);
+    const [menu, setMenu] = useState(null);
+    const [indexDesigner, setIndexDesigner] = useState(null);
+    const [infoRevision, setInfoRevision] = useState(0);
+    const [confirmDestructive, setConfirmDestructive] = useState(true);
+    const transfer = dumpProgressFor(dumpProgress);
+    const transferBusy = transfer?.status === "running";
+    const dumpBusy = transfer?.kind === "dump" && transferBusy;
+    const restoreBusy = transfer?.kind === "restore" && transferBusy;
+
+    useEffect(() => {
+        getPref("confirmDestructive").then((value) => setConfirmDestructive(value !== false));
+    }, []);
+
+    const refreshObjectInfo = (tableRef) => {
+        invalidateStructureSnapshot(session, objectCacheKey(tableRef));
+        session.coordinator.adapters?.notify?.();
+        setInfoRevision((value) => value + 1);
+    };
+
+    const openIndexDesigner = async (tableRef) => {
+        const opened = ensureObjectWorkspace(session, tableRef);
+        if (opened.error) {
+            toast(opened.error, "warning");
+            return;
+        }
+        try {
+            const info = await loadTableInfo(tableRef);
+            setIndexDesigner({ tableRef, workspaceId: opened.workspaceId, info });
+        }
+        catch (error) {
+            toast(error.message, "warning");
+        }
+    };
+
+    const openMenu = (event, tableRef, table) => {
+        const items = table.kind === "view"
+            ? [{ label: "Drop", danger: true, onClick: () => dropObject(session, tableRef, confirmDestructive) }]
+            : [
+                { label: "Index", onClick: () => openIndexDesigner(tableRef) },
+                { label: "Truncate", danger: true, onClick: () => truncateTable(session, tableRef, confirmDestructive) },
+                { separator: true },
+                { label: "Drop", danger: true, onClick: () => dropObject(session, tableRef, confirmDestructive) },
+            ];
+        setMenu({ x: event.clientX, y: event.clientY, items });
+    };
 
     const resize = (value) => {
         const next = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, Math.round(value)));
@@ -186,18 +249,34 @@ export function Sidebar({ onNewTable, onExportDatabase }) {
 
     return (
         <div ref={sidebar} className="sidebar flex w-[var(--sidebar-width)] flex-shrink-0 flex-col border-r" style={{ "--sidebar-width": `${width}px`, borderColor: "var(--muxy-border)" }}>
-            <div className="search-bar" style={{ borderColor: "var(--muxy-border)" }}>
-                <input type="text" placeholder="Filter tables" className="search-bar-input" value={filter} onChange={(event) => setFilter(event.target.value)} />
-                {onNewTable ? (
-                    <button className="icon-btn" title="New table" onClick={onNewTable}>
-                        <Icon name="plus" />
-                    </button>
-                ) : null}
-                {onExportDatabase ? (
-                    <button className="icon-btn" title="Export database" aria-label="Export database" onClick={onExportDatabase}>
-                        <Icon name="download" />
-                    </button>
-                ) : null}
+            <div className="search-bar-shell">
+                <div className="search-bar" style={{ borderColor: "var(--muxy-border)" }}>
+                    <input type="text" placeholder="Filter tables" className="search-bar-input" value={filter} onChange={(event) => setFilter(event.target.value)} />
+                    {onImportDatabase ? (
+                        <button
+                            className="icon-btn"
+                            title={restoreBusy ? transfer.label : "Import database"}
+                            aria-label={restoreBusy ? transfer.label : "Import database"}
+                            aria-busy={restoreBusy ? "true" : undefined}
+                            disabled={transferBusy}
+                            onClick={onImportDatabase}
+                        >
+                            <Icon name={restoreBusy ? "clock" : "upload"} />
+                        </button>
+                    ) : null}
+                    {onExportDatabase ? (
+                        <button
+                            className="icon-btn"
+                            title={dumpBusy ? transfer.label : "Export database"}
+                            aria-label={dumpBusy ? transfer.label : "Export database"}
+                            aria-busy={dumpBusy ? "true" : undefined}
+                            disabled={transferBusy}
+                            onClick={onExportDatabase}
+                        >
+                            <Icon name={dumpBusy ? "clock" : "download"} />
+                        </button>
+                    ) : null}
+                </div>
             </div>
             <div className="flex-1 overflow-y-auto py-[var(--s2)]">
                 {catalogError ? (
@@ -215,7 +294,9 @@ export function Sidebar({ onNewTable, onExportDatabase }) {
                             active={activeKey === key}
                             loadTableInfo={loadTableInfo}
                             focusTableColumn={focusTableColumn}
+                            infoRevision={infoRevision}
                             onSelect={() => selectTable(ref)}
+                            onContextMenu={openMenu}
                         />
                     );
                 })}
@@ -253,6 +334,17 @@ export function Sidebar({ onNewTable, onExportDatabase }) {
                     }
                 }}
             />
+            {menu ? <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} /> : null}
+            {indexDesigner ? (
+                <IndexDesignerModal
+                    session={session}
+                    workspaceId={indexDesigner.workspaceId}
+                    tableRef={indexDesigner.tableRef}
+                    info={indexDesigner.info}
+                    onDone={() => refreshObjectInfo(indexDesigner.tableRef)}
+                    onClose={() => setIndexDesigner(null)}
+                />
+            ) : null}
         </div>
     );
 }

@@ -1,6 +1,6 @@
 import { Modal } from "../ui/modal.jsx";
 import { Icon } from "../ui/icon.jsx";
-import { dumpDatabase } from "./transfer.js";
+import { dumpDatabase, restoreDatabase } from "./transfer.js";
 
 function MenuItem({ icon, label, onSelect }) {
     return (
@@ -11,15 +11,29 @@ function MenuItem({ icon, label, onSelect }) {
     );
 }
 
-export function DatabaseExportModal({ session, onClose }) {
+export function DatabaseExportModal({ session, onClose, onDump }) {
     const run = () => {
         onClose();
-        void dumpDatabase(session);
+        void (onDump ? onDump() : dumpDatabase(session));
     };
     return (
         <Modal icon="download" title="Export database" size="sm" onClose={onClose}>
             <div className="py-[var(--s3)]">
                 <MenuItem icon="save" label="Dump entire database" onSelect={run} />
+            </div>
+        </Modal>
+    );
+}
+
+export function DatabaseImportModal({ session, onClose, onRestore }) {
+    const run = () => {
+        onClose();
+        void (onRestore ? onRestore() : restoreDatabase(session));
+    };
+    return (
+        <Modal icon="upload" title="Import database" size="sm" onClose={onClose}>
+            <div className="py-[var(--s3)]">
+                <MenuItem icon="upload" label="Import SQL dump" onSelect={run} />
             </div>
         </Modal>
     );

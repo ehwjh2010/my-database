@@ -68,3 +68,33 @@ test("tableInfo reads complete columns and all index columns without N+1 queries
     assert.equal(info.rowid, null);
     assert.equal(calls.filter((argv) => argv.at(-1).includes("pragma_index")).length, 1);
 });
+
+test("SQLite database restore reads the dump with .read", async () => {
+    calls = [];
+    muxy.exec = async (argv) => {
+        calls.push(argv);
+        return { exitCode: 0, stdout: "", stderr: "" };
+    };
+    await sqlite.importDatabase(ctx, "/tmp/exports/database.sql", { timeoutMs: 600000 });
+    assert.deepEqual(calls[0], ["sqlite3", "/tmp/Application Support/example.sqlite", ".read /tmp/exports/database.sql"]);
+});
+
+test("SQLite runBatch runs a statement batch without bail or json flags", async () => {
+    calls = [];
+    muxy.exec = async (argv) => {
+        calls.push(argv);
+        return { exitCode: 0, stdout: "", stderr: "" };
+    };
+    await sqlite.runBatch(ctx, "INSERT INTO t VALUES (1);\nINSERT INTO t VALUES (2);", { timeoutMs: 600000 });
+    assert.deepEqual(calls[0], ["sqlite3", "-batch", "/tmp/Application Support/example.sqlite", "INSERT INTO t VALUES (1);\nINSERT INTO t VALUES (2);"]);
+});
+
+test("SQLite runBatch runs a statement batch without bail or json flags", async () => {
+    calls = [];
+    muxy.exec = async (argv) => {
+        calls.push(argv);
+        return { exitCode: 0, stdout: "", stderr: "" };
+    };
+    await sqlite.runBatch(ctx, "INSERT INTO t VALUES (1);\nINSERT INTO t VALUES (2);", { timeoutMs: 600000 });
+    assert.deepEqual(calls[0], ["sqlite3", "-batch", "/tmp/Application Support/example.sqlite", "INSERT INTO t VALUES (1);\nINSERT INTO t VALUES (2);"]);
+});

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
     initialWorkspaceState,
     objectCacheKey,
+    objectWorkspaceKey,
     sameObjectRef,
     workspaceReducer,
     pendingChangeCount,
@@ -16,6 +17,15 @@ import {
     isCurrentQueryEntry,
     isCurrentDataApply,
 } from "../src/workbench/workspace-state.js";
+
+test("objectWorkspaceKey keeps data and structure workspaces distinct for the same object", () => {
+    const ref = { database: "app", schema: "main", table: "orders" };
+
+    assert.equal(objectWorkspaceKey(ref), objectCacheKey(ref));
+    assert.equal(objectWorkspaceKey(ref, "data"), objectCacheKey(ref));
+    assert.notEqual(objectWorkspaceKey(ref, "structure"), objectCacheKey(ref));
+    assert.notEqual(objectWorkspaceKey(ref, "structure"), objectWorkspaceKey({ ...ref, table: "customers" }, "structure"));
+});
 
 test("objectCacheKey never collides when names contain dots", () => {
     const dottedSchema = { database: "app", schema: "sales.report", table: "orders" };

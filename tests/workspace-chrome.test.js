@@ -24,7 +24,26 @@ test("workspaceTabTitle exposes the complete object name for tooltips", () => {
 
     assert.equal(workspaceTabTitle({ table: long, kind: "table" }), long);
     assert.equal(workspaceTabTitle({ table: "recent_orders", kind: "view" }), "View: recent_orders");
+    assert.equal(workspaceTabTitle({ table: "orders", kind: "table" }, "structure"), "DDL: orders");
     assert.ok(workspaceTabTitle({ table: long, kind: "table" }).includes(long));
+});
+
+test("projectWorkspaceTabs lists a structure workspace as a distinct DDL tab", () => {
+    const tabs = projectWorkspaceTabs({
+        order: [1, 2],
+        activeId: 2,
+        byId: {
+            1: { id: 1, key: "k1", generation: 1, ref: { database: "", schema: "", table: "orders", kind: "table" }, view: "data" },
+            2: { id: 2, key: "k1:structure", generation: 2, ref: { database: "", schema: "", table: "orders", kind: "table" }, view: "structure" },
+        },
+        changesByKey: new Map(),
+    });
+
+    assert.deepEqual(tabs.map((tab) => tab.name), ["orders", "DDL: orders"]);
+    assert.deepEqual(tabs.map((tab) => tab.title), ["orders", "DDL: orders"]);
+    assert.deepEqual(tabs.map((tab) => tab.icon), ["table", "columns"]);
+    assert.equal(tabs[1].active, true);
+    assert.equal(tabs[1].dirty, false);
 });
 
 test("projectWorkspaceTabs lists tabs in registry open order with name, title, active and dirty", () => {

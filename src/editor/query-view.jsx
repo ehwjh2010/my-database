@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../ui/icon.jsx";
 import { Modal } from "../ui/modal.jsx";
-import { queryExecution } from "./sql-editor.js";
+import { ContextMenu } from "../ui/context-menu.jsx";
+import { queryExecuteIntent } from "./query-execute-intent.js";
 import { queryErrorDiagnostic } from "../lib/sql/error-diagnostic.js";
 import { exportActive } from "../transfer/transfer.js";
 import { ExportMenuModal } from "../transfer/transfer-menu.jsx";
 import { SqlEditorView } from "./sql-editor-view.jsx";
 import { Results } from "./results.jsx";
+import { ResultsPane } from "./results-pane.jsx";
 import { commitQueryError, commitQueryResult } from "../workbench/query-runtime.js";
 
 export function schemaForCompletion(session) {
@@ -18,12 +20,15 @@ export function schemaForCompletion(session) {
 
 export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHooksRef }) {
     const editorRef = useRef(null);
+    const editorHostRef = useRef(null);
+    const resultsHeightRef = useRef(null);
     const [conflictOpen, setConflictOpen] = useState(false);
     const [conflictBusy, setConflictBusy] = useState(false);
     const [conflictActionError, setConflictActionError] = useState(null);
     const [modalConflictVersion, setModalConflictVersion] = useState(null);
     const [exportOpen, setExportOpen] = useState(false);
     const [resultsOpen, setResultsOpen] = useState(false);
+    const [executeMenu, setExecuteMenu] = useState(null);
 
     const isSqlTab = sqlTabId != null;
     const tabId = isSqlTab ? sqlTabId : workspaceId;
@@ -59,10 +64,6 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
     const isActive = () => isSqlTab
         ? session.surface === "console" && session.sqlRegistry.activeId === sqlTabId
         : session.surface === "object" && session.registry.activeId === workspaceId;
-
-    const currentStatement = () => {
-        return editorRef.current ? queryExecution(editorRef.current, session.conn.engine) : null;
-    };
 
     const setDraftText = useCallback((sql) => {
         if (isSqlTab)
@@ -111,23 +112,38 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
         [session, setStatus, tabId],
     );
 
-    const run = useCallback(async () => {
-        if (!editorRef.current) return;
-        const execution = currentStatement();
-        if (!execution?.sql)
+    const presentExecute = useCallback((mode) => {
+        const view = editorRef.current;
+        if (!view)
             return;
-        await execute(execution, "execute");
-    }, [execute]);
+        const intent = queryExecuteIntent(view, session.conn.engine);
+        if (intent.kind === "none")
+            return;
+        if (intent.kind === "run") {
+            void execute(intent.execution, mode);
+            return;
+        }
+        const coords = view.coordsAtPos?.(view.state.selection.main.head);
+        setExecuteMenu({
+            x: coords?.left ?? 24,
+            y: coords?.bottom ?? 72,
+            items: [
+                ...intent.statements.map((statement) => ({
+                    label: statement.current ? `${statement.label}  (current)` : statement.label,
+                    onClick: () => execute(statement.execution, mode),
+                })),
+                { separator: true },
+                { label: intent.all.label, onClick: () => execute(intent.all.execution, mode) },
+            ],
+        });
+    }, [execute, session.conn.engine]);
+
+    const run = useCallback(() => presentExecute("execute"), [presentExecute]);
 
     const runRef = useRef(run);
     runRef.current = run;
 
-    const runExplain = async () => {
-        const execution = currentStatement();
-        if (!execution?.sql)
-            return;
-        await execute(execution, "explain");
-    };
+    const runExplain = () => presentExecute("explain");
 
     const retrySave = async () => {
         const result = await session.coordinator.retrySqlSave(tabId);
@@ -193,7 +209,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                         <Icon name="play" />
                         Run
                     </button>
-                    <button className="btn btn-compact" title="Explain the selected SQL or full file" disabled={qs.queryRunning} onClick={runExplain}>
+                    <button className="btn btn-compact" title="Explain the selected SQL or current statement" disabled={qs.queryRunning} onClick={runExplain}>
                         Explain
                     </button>
                     <div className="flex-1" />
@@ -231,7 +247,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                         </div>
                     </Modal>
                 ) : null}
-                <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+                <div ref={editorHostRef} className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
                     <SqlEditorView
                         engine={session.conn.engine}
                         schema={schemaForCompletion(session)}
@@ -242,15 +258,14 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                         onRun={() => runRef.current()}
                     />
                     {hasResults && resultsOpen ? (
-                        <div className="absolute inset-x-0 bottom-0 z-10 flex h-[45%] flex-col overflow-hidden rounded-t-[var(--radius-card)] border border-b-0 bg-background" style={{ borderColor: "var(--muxy-border)" }}>
-                            <div className="min-h-0 flex-1 overflow-hidden">
-                                <Results results={qs.results?.results} error={qs.queryError} onClose={() => setResultsOpen(false)} />
-                            </div>
-                        </div>
+                        <ResultsPane hostRef={editorHostRef} heightRef={resultsHeightRef}>
+                            <Results results={qs.results?.results} error={qs.queryError} onClose={() => setResultsOpen(false)} />
+                        </ResultsPane>
                     ) : null}
                 </div>
             </div>
             {exportOpen ? <ExportMenuModal onClose={() => setExportOpen(false)} onExport={exportResults} /> : null}
+            {executeMenu ? <ContextMenu x={executeMenu.x} y={executeMenu.y} items={executeMenu.items} onClose={() => setExecuteMenu(null)} /> : null}
         </div>
     );
 }

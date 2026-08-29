@@ -1,4 +1,5 @@
 import { run } from "../exec.js";
+import { writeDumpPart } from "../secure-file.js";
 import { detect as detectBinary, which } from "../cli-detect.js";
 import { ensurePgPassFile } from "../cred-file.js";
 import { quoteIdent, quoteLiteral, qualifiedName } from "../sql/quote.js";
@@ -94,7 +95,7 @@ function rowsAsObjects(result) {
 
 export const postgres = {
     engine: "postgres",
-    capabilities: { databases: true, schemas: true, routines: true, sequences: true, triggers: true, importCsv: true, explain: true, rowid: false },
+    capabilities: { databases: true, schemas: true, routines: true, sequences: true, triggers: true, importData: true, explain: true, rowid: false },
     dialect: { explainPrefix: "EXPLAIN", cmDialect: "PostgreSQL" },
 
     detect: () => detectBinary(BIN),
@@ -209,14 +210,23 @@ export const postgres = {
         return `CREATE TABLE ${qualifiedName("postgres", ref)} (\n${body.join(",\n")}\n);`;
     },
 
-    async importCsv(ctx, ref, filePath, opts = {}) {
-        const target = qualifiedName("postgres", ref);
-        const sql = `\\copy ${target} FROM ${quoteLiteral("postgres", filePath)} WITH (FORMAT csv${opts.header ? ", HEADER" : ""})`;
+    async dumpDatabase(ctx, outPath, opts = {}) {
+        const table = opts.table ? `${ctx.schema || "public"}.${opts.table}` : null;
+        const argv = ["pg_dump", "-w", "--inserts", "-d", await conninfo(ctx), ...(table ? ["-t", table] : [])];
+        const sql = await run(argv, { timeoutMs: opts.timeoutMs || 600000 });
+        await writeDumpPart(outPath, sql.endsWith("\n") ? sql : `${sql}\n`, Boolean(opts.append));
+    },
+
+    async importDatabase(ctx, dumpPath, opts = {}) {
+        await exec(ctx, ["-f", dumpPath], { timeoutMs: opts.timeoutMs || 600000 });
+    },
+
+    async runBatch(ctx, sql, opts = {}) {
         await exec(ctx, ["-q", "-c", sql], opts);
     },
 
-    async dumpDatabase(ctx, outPath, opts = {}) {
-        await run(["pg_dump", "-w", "-d", await conninfo(ctx), "-f", outPath], { timeoutMs: opts.timeoutMs || 600000 });
+    async runBatch(ctx, sql, opts = {}) {
+        await exec(ctx, ["-q", "-c", sql], opts);
     },
 
     async allColumns(ctx) {

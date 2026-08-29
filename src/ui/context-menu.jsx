@@ -47,7 +47,7 @@ export function ContextMenu({ x, y, items, onClose }) {
                 ) : (
                     <button
                         key={index}
-                        className="tree-row w-full text-left"
+                        className={`tree-row w-full text-left${item.danger ? " btn-danger" : ""}`}
                         onClick={() => {
                             onClose();
                             item.onClick();

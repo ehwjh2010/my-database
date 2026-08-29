@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createChanges, setEdit, setInsertCell, toggleDelete, addInsert, removeInsert, clearChanges, changeCount } from "../src/grid/pending-changes.js";
+import { createChanges, setEdit, setInsertCell, toggleDelete, addInsert, removeInsert, clearChanges, changeCount, revertRow, rowHasPending } from "../src/grid/pending-changes.js";
 
 test("reverting an edited numeric or boolean cell clears its dirty entry", () => {
     const changes = createChanges("sqlite", { table: "items" }, { primaryKey: ["id"], rowid: false });
@@ -42,4 +42,16 @@ test("changeCount is the canonical three-part pending count", () => {
     const insert = addInsert(changes);
     setInsertCell(changes, insert.id, "name", "value");
     assert.equal(changeCount(changes), 3);
+});
+
+test("revertRow clears edits and the delete mark for one key", () => {
+    const changes = createChanges("sqlite", { table: "items" }, { primaryKey: ["id"], rowid: false });
+    setEdit(changes, [1], "name", "new", "old");
+    toggleDelete(changes, [1]);
+    toggleDelete(changes, [2]);
+    assert.equal(rowHasPending(changes, [1]), true);
+    assert.equal(revertRow(changes, [1]), true);
+    assert.equal(rowHasPending(changes, [1]), false);
+    assert.equal(rowHasPending(changes, [2]), true);
+    assert.equal(changeCount(changes), 1);
 });

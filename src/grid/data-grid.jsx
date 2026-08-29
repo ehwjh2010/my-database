@@ -73,8 +73,21 @@ export function DataGrid({ page, changes, editable, mutationLocked, onChange, ed
         onSelectCell({ row, column });
     };
 
+    const selectRow = (row) => {
+        if (!displayColumns.length)
+            return;
+        selectCell(row, Math.max(0, Math.min(selectedCell?.column ?? 0, displayColumns.length - 1)));
+    };
+
+    const selectInsert = (insertId, column) => {
+        if (!displayColumns.length)
+            return;
+        gridRef.current.focus({ preventScroll: true });
+        onSelectCell({ kind: "insert", insertId, column: Math.max(0, Math.min(column, displayColumns.length - 1)) });
+    };
+
     const onGridKeyDown = (event) => {
-        if (event.target !== event.currentTarget || editing || !selectedCell)
+        if (event.target !== event.currentTarget || editing || !selectedCell || selectedCell.kind === "insert")
             return;
         const next = nextSelectedCell(selectedCell, event.key, displayRows.length, displayColumns.length);
         if (!next)
@@ -119,10 +132,11 @@ export function DataGrid({ page, changes, editable, mutationLocked, onChange, ed
                 <tbody>
                     {displayRows.map((row, r) => {
                         const deleted = editable && isDeleted(changes.model, keyValuesFor(r));
+                        const rowSelected = selectedCell?.row === r;
                         return (
-                            <tr key={r} className={deleted ? "row-deleted" : undefined}>
+                            <tr key={r} className={[deleted ? "row-deleted" : "", rowSelected ? "row-selected" : ""].filter(Boolean).join(" ") || undefined}>
                                 {editable ? (
-                                    <td className="gutter" title="Click to mark for deletion" onClick={() => { if (!mutationLocked) { changes.toggleDelete(keyValuesFor(r)); onChange(); } }}>
+                                    <td className="gutter" onClick={() => selectRow(r)}>
                                         {r + 1}
                                     </td>
                                 ) : null}
@@ -171,9 +185,10 @@ export function DataGrid({ page, changes, editable, mutationLocked, onChange, ed
                             columns={displayColumns}
                             editing={editing}
                             mutationLocked={mutationLocked}
+                            selectedCell={selectedCell}
+                            onSelectInsert={selectInsert}
                             onEdit={setEditing}
                             onCommit={commitInsertEdit}
-                            onRemove={(id) => { if (!mutationLocked) { changes.removeInsert(id); onChange(); } }}
                         />
                     ) : null}
                 </tbody>

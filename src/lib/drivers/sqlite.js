@@ -1,4 +1,5 @@
 import { run } from "../exec.js";
+import { writeDumpPart } from "../secure-file.js";
 import { detect as detectBinary } from "../cli-detect.js";
 import { quoteIdent, quoteLiteral } from "../sql/quote.js";
 import { makeResult, fromObjects, parseJsonStream } from "../parse/result.js";
@@ -20,7 +21,7 @@ async function query(ctx, sql, opts = {}) {
 
 export const sqlite = {
     engine: "sqlite",
-    capabilities: { databases: false, schemas: false, routines: false, sequences: false, triggers: true, importCsv: true, explain: true, rowid: true },
+    capabilities: { databases: false, schemas: false, routines: false, sequences: false, triggers: true, importData: true, explain: true, rowid: true },
     dialect: { explainPrefix: "EXPLAIN QUERY PLAN", cmDialect: "SQLite" },
 
     detect: () => detectBinary(BIN),
@@ -117,12 +118,21 @@ export const sqlite = {
         return sets[0]?.[0]?.sql || "";
     },
 
-    async importCsv(ctx, ref, filePath, opts = {}) {
-        await run([BIN, "-batch", ctx.conn.sqlite.path, ".mode csv", `.import ${opts.header ? "--skip 1 " : ""}${filePath} ${ref.table}`], opts);
+    async dumpDatabase(ctx, outPath, opts = {}) {
+        const sql = await run([BIN, ctx.conn.sqlite.path, opts.table ? `.dump ${opts.table}` : ".dump"], { timeoutMs: opts.timeoutMs || 600000 });
+        await writeDumpPart(outPath, sql.endsWith("\n") ? sql : `${sql}\n`, Boolean(opts.append));
     },
 
-    async dumpDatabase(ctx, outPath, opts = {}) {
-        await run([BIN, ctx.conn.sqlite.path, `.output ${outPath}`, ".dump"], opts);
+    async importDatabase(ctx, dumpPath, opts = {}) {
+        await run([BIN, ctx.conn.sqlite.path, `.read ${dumpPath}`], { timeoutMs: opts.timeoutMs || 600000 });
+    },
+
+    async runBatch(ctx, sql, opts = {}) {
+        await run([BIN, "-batch", ctx.conn.sqlite.path, sql], opts);
+    },
+
+    async runBatch(ctx, sql, opts = {}) {
+        await run([BIN, "-batch", ctx.conn.sqlite.path, sql], opts);
     },
 
     async allColumns(ctx) {

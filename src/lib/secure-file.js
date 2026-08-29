@@ -1,7 +1,9 @@
 import { run, tryRun } from "./exec.js";
+import { transferPercent } from "./transfer-percent.js";
 
 const WRITER = 'open(my $f, ">", $ARGV[0]) or die "$!"; chmod 0600, $ARGV[0]; print $f $ARGV[1]; close $f;';
 const APPENDER = 'open(my $f, ">>", $ARGV[0]) or die "$!"; print $f $ARGV[1]; close $f;';
+const READER = 'open(my $f, "<", $ARGV[0]) or die "$!"; binmode $f; local $/; print <$f> // "";';
 const CHUNK = 96 * 1024;
 const textEncoder = new TextEncoder();
 const PRIVATE_FILE_SCRIPT = String.raw`
@@ -234,10 +236,38 @@ export async function writeSecureFile(path, content) {
     await run(["perl", "-e", WRITER, path, content]);
 }
 
-export async function writeTextFile(path, content) {
-    await run(["perl", "-e", WRITER, path, content.slice(0, CHUNK)]);
-    for (let i = CHUNK; i < content.length; i += CHUNK)
-        await run(["perl", "-e", APPENDER, path, content.slice(i, i + CHUNK)]);
+async function writeChunks(path, content, firstScript, onProgress) {
+    const total = Math.max(String(content).length, 1);
+    let written = 0;
+    const text = String(content);
+    const emit = () => onProgress?.(transferPercent(written, total), written, total);
+    await run(["perl", "-e", firstScript, path, text.slice(0, CHUNK)]);
+    written = Math.min(CHUNK, text.length);
+    emit();
+    for (let i = CHUNK; i < text.length; i += CHUNK) {
+        await run(["perl", "-e", APPENDER, path, text.slice(i, i + CHUNK)]);
+        written = Math.min(i + CHUNK, text.length);
+        emit();
+    }
+}
+
+export async function writeTextFile(path, content, onProgress) {
+    await writeChunks(path, content, WRITER, onProgress);
+}
+
+export async function appendTextFile(path, content, onProgress) {
+    await writeChunks(path, content, APPENDER, onProgress);
+}
+
+export async function writeDumpPart(path, content, append) {
+    if (append)
+        await appendTextFile(path, content);
+    else
+        await writeTextFile(path, content);
+}
+
+export async function readTextFile(path) {
+    return run(["perl", "-e", READER, path]);
 }
 
 export async function removeFile(path) {

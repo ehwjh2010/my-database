@@ -7,18 +7,46 @@ const FORMATS = [
     ["sql", "SQL INSERTs"],
 ];
 
-export function ObjectExportMenu({ onClose, onExport }) {
+export function ObjectFormatMenu({ icon, title, action, note, onClose, onPick }) {
     return (
-        <Modal icon="download" title="Export object" size="sm" onClose={onClose}>
+        <Modal icon={icon} title={title} size="sm" onClose={onClose}>
             <div className="py-[var(--s3)]">
                 {FORMATS.map(([format, label]) => (
-                    <button key={format} className="tree-row w-full text-left" onClick={() => onExport(format)}>
-                        <Icon name="download" />
-                        Export as {label}
+                    <button key={format} className="tree-row w-full text-left" onClick={() => onPick(format)}>
+                        <Icon name={icon} />
+                        {action} {label}
                     </button>
                 ))}
-                <p className="px-[var(--s5)] py-[var(--s3)] text-[var(--font-footnote)] text-muted-foreground">Exports committed object data, up to 1,000,000 rows.</p>
+                {note ? (
+                    <p className="px-[var(--s5)] py-[var(--s3)] text-[var(--font-footnote)] text-muted-foreground">{note}</p>
+                ) : null}
             </div>
         </Modal>
+    );
+}
+
+export function ObjectExportMenu({ onClose, onExport }) {
+    return (
+        <ObjectFormatMenu
+            icon="download"
+            title="Export object"
+            action="Export as"
+            note="Exports committed object data, up to 1,000,000 rows."
+            onClose={onClose}
+            onPick={onExport}
+        />
+    );
+}
+
+export function ObjectImportMenu({ onClose, onImport }) {
+    return (
+        <ObjectFormatMenu
+            icon="upload"
+            title="Import data"
+            action="Import from"
+            note="Imports into the current table. Existing rows are not modified."
+            onClose={onClose}
+            onPick={onImport}
+        />
     );
 }

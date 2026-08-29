@@ -4,9 +4,10 @@ import { Icon } from "../ui/icon.jsx";
 import { toast } from "../ui/toast.js";
 import { buildCount } from "../lib/sql/select-builder.js";
 import { buildChangeScript } from "../lib/sql/change-script.js";
-import { chooseExportPath, copyResult, exportCommittedObject } from "../transfer/transfer.js";
+import { chooseExportPath, chooseImportPath, copyResult, exportCommittedObject, importCommittedObject } from "../transfer/transfer.js";
+import { TransferProgressModal } from "../transfer/transfer-progress-modal.jsx";
 import { copyToClipboard } from "../lib/clipboard.js";
-import { setEdit, toggleDelete, addInsert, removeInsert, clearChanges, isDeleted } from "./pending-changes.js";
+import { setEdit, toggleDelete, addInsert, removeInsert, clearChanges, isDeleted, rowHasPending, revertRow } from "./pending-changes.js";
 import { useTablePage } from "./use-table-page.js";
 import { DataGrid } from "./data-grid.jsx";
 import { FilterBar } from "./filter-bar.jsx";
@@ -19,7 +20,7 @@ import { useSession } from "../workbench/session-context.jsx";
 import { objectCacheKey, isCurrentDataApply, isCurrentDataCount, isCurrentDataExport } from "../workbench/workspace-state.js";
 import { dataRuntimeFor, initialGridState, invalidateDataRuntime } from "../workbench/data-runtime.js";
 import { changeCount } from "./pending-changes.js";
-import { ObjectExportMenu } from "./object-export-menu.jsx";
+import { ObjectExportMenu, ObjectImportMenu } from "./object-export-menu.jsx";
 
 export function gridStateFor(session, ref) {
     const key = objectCacheKey(ref);
@@ -45,7 +46,7 @@ async function copyText(text) {
 }
 
 export function DataView({ session, tableRef, workspaceId, setStatus }) {
-    const { notifyPendingChanges, refreshData, columnFocus, consumeColumnFocus, dataOperation, setView } = useSession();
+    const { notifyPendingChanges, refreshData, columnFocus, consumeColumnFocus, dataOperation } = useSession();
     const coordinator = session.coordinator;
     const activeWorkspaceKey = objectCacheKey(tableRef);
     const runtime = dataRuntimeFor(session, activeWorkspaceKey, tableRef, undefined, workspaceId);
@@ -59,28 +60,37 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
     const [review, setReview] = useState(null);
     const [viewerValue, setViewerValue] = useState(undefined);
     const [exportOpen, setExportOpen] = useState(false);
+    const [importOpen, setImportOpen] = useState(false);
+    const [transferProgress, setTransferProgress] = useState(null);
     const bumpPendingChanges = () => {
         bumpChanges();
         notifyPendingChanges();
     };
 
     const page = useTablePage(session, tableRef, gridState, activeWorkspaceKey, runtime.dataRevision, workspaceId);
-    const selectionIsCurrent = Boolean(selectedCell
+    const sameGrid = Boolean(selectedCell
         && selectedCell.workspaceId === workspaceId
         && selectedCell.objectKey === activeWorkspaceKey
-        && selectedCell.dataRevision === runtime.dataRevision
+        && selectedCell.dataRevision === runtime.dataRevision);
+    const insertSelected = Boolean(sameGrid && selectedCell.kind === "insert" && page.changes?.inserts.some((entry) => entry.id === selectedCell.insertId));
+    const existingSelected = Boolean(sameGrid
+        && selectedCell.kind !== "insert"
         && page.displayRows?.[selectedCell.row]
-        && page.changes
-        && !isDeleted(page.changes, selectedCell.keyValues));
+        && page.changes);
+    const selectionIsCurrent = insertSelected || (existingSelected && !isDeleted(page.changes, selectedCell.keyValues));
+    const hasSelectedPending = insertSelected || (existingSelected && rowHasPending(page.changes, selectedCell.keyValues));
 
     const toolbarInput = {
         hasObject: Boolean(tableRef),
         pageState: page.loading ? "loading" : page.error ? "error" : page.displayRows.length ? "ready" : "empty",
         editable: Boolean(page.editable),
         hasStableSelection: selectionIsCurrent,
+        hasRevertSelection: insertSelected || existingSelected,
+        hasSelectedPending,
         pendingCount: page.changes ? changeCount(page.changes) : 0,
         operationKind: dataOperation?.kind || "idle",
-        importSupported: Boolean(session.driver?.importCsv),
+        importSupported: Boolean(session.driver?.capabilities?.importData),
+        transferProgress,
     };
 
     const mutationLocked = toolbarInput.operationKind === "apply" || toolbarInput.operationKind === "import";
@@ -88,6 +98,10 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
     useEffect(() => {
         setSelectedCell(null);
     }, [activeWorkspaceKey, runtime.dataRevision, gridState.page, gridState.rawWhere, gridState.rawOrderBy, session.pageSize]);
+
+    useEffect(() => {
+        setTransferProgress(null);
+    }, [activeWorkspaceKey]);
 
     useEffect(() => {
         if (!page.loading && !page.error)
@@ -218,6 +232,7 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
             return;
         const insert = addInsert(model);
         bumpPendingChanges();
+        setSelectedCell({ kind: "insert", insertId: insert.id, column: 0, workspaceId, objectKey: activeWorkspaceKey, dataRevision: runtime.dataRevision });
         setEditing({ kind: "insert", insertId: insert.id, column: page.displayColumns[0]?.name });
     };
 
@@ -226,10 +241,17 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
             return refreshData();
         if (id === "new-row")
             return addRow();
-        if (id === "discard-all") {
-            if (mutationLocked || !page.editable)
+        if (id === "revert-selected") {
+            if (mutationLocked || !page.editable || !hasSelectedPending)
                 return;
-            clearChanges(model);
+            if (selectedCell.kind === "insert") {
+                changes.removeInsert(selectedCell.insertId);
+                if (editing?.kind === "insert" && editing.insertId === selectedCell.insertId)
+                    setEditing(null);
+                setSelectedCell(null);
+            }
+            else
+                revertRow(model, page.keyValuesFor(selectedCell.row));
             return bumpPendingChanges();
         }
         if (id === "review-dml")
@@ -237,13 +259,20 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
         if (id === "apply")
             return openReview(true);
         if (id === "ddl")
-            return setView("structure");
+            return coordinator.openOrActivate(tableRef, "structure");
         if (id === "import")
-            return importCsv();
+            return setImportOpen(true);
         if (id === "export")
             return setExportOpen(true);
         if (id === "delete-row" && !mutationLocked && selectionIsCurrent) {
-            changes.toggleDelete(page.keyValuesFor(selectedCell.row));
+            if (selectedCell.kind === "insert") {
+                changes.removeInsert(selectedCell.insertId);
+                if (editing?.kind === "insert" && editing.insertId === selectedCell.insertId)
+                    setEditing(null);
+            }
+            else {
+                changes.toggleDelete(page.keyValuesFor(selectedCell.row));
+            }
             bumpPendingChanges();
             return setSelectedCell(null);
         }
@@ -272,41 +301,66 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
                 format: operation.format,
                 path,
                 timeoutMs: session.timeoutMs,
+                onProgress: setTransferProgress,
             });
             if (!isCurrentDataExport(session, operation))
                 return;
-            if (exported.capped)
+            if (exported.capped) {
+                setTransferProgress({ kind: "export", status: "done", label: "Export reached 1,000,000 rows", percent: 100 });
                 toast("Export may be incomplete: reached 1,000,000 rows", "warning");
-            else
-                toast(`Exported ${exported.rowCount} rows`, "success");
+            }
+            else {
+                const label = `Exported ${exported.rowCount} rows`;
+                setTransferProgress({ kind: "export", status: "done", label, percent: 100 });
+                toast(label, "success");
+            }
         } catch (error) {
-            if (isCurrentDataExport(session, operation))
+            if (isCurrentDataExport(session, operation)) {
+                setTransferProgress({ kind: "export", status: "error", label: "Export failed", percent: 100 });
                 toast(`EXPORT_FAILED: ${error.message}`, "warning");
+            }
         } finally {
             coordinator.settleDataOperation(operation);
         }
     };
 
-    const importCsv = async () => {
+    const importData = async (format) => {
+        setImportOpen(false);
         if (mutationLocked || !page.editable || toolbarInput.pendingCount > 0 || !toolbarInput.importSupported)
             return;
         const operation = coordinator.startDataOperation(workspaceId, "import", { objectRef: tableRef, pendingRevision: model.revision });
         if (operation.error)
             return toast(operation.error, "warning");
+        let importedCount = null;
         try {
-            const path = await muxy.dialog.pickFile({ title: "Choose CSV file", types: ["public.comma-separated-values-text"] });
+            const path = await chooseImportPath(format);
             if (!path)
                 return;
-            await session.driver.importCsv(session.ctx, tableRef, path, { header: true });
+            const imported = await importCommittedObject({
+                driver: session.driver,
+                engine: session.conn.engine,
+                operationCtx: session.ctx,
+                objectRef: tableRef,
+                format,
+                path,
+                timeoutMs: session.timeoutMs,
+                onProgress: setTransferProgress,
+            });
             if (session.registry.byId[workspaceId]?.key === activeWorkspaceKey && operation.token === session.workspaceOwners.get(activeWorkspaceKey)?.operation?.token) {
-                invalidateDataRuntime(runtime);
-                toast("CSV imported", "success");
+                importedCount = imported.rowCount;
+                setTransferProgress({ kind: "import", status: "done", label: `Imported ${imported.rowCount} rows`, percent: 100 });
+                toast(`Imported ${imported.rowCount} rows from ${format.toUpperCase()}`, "success");
             }
         } catch (error) {
+            setTransferProgress({ kind: "import", status: "error", label: error.message || "Import failed", percent: 100 });
             toast(error.message, "warning");
         } finally {
             coordinator.settleDataOperation(operation);
         }
+        if (importedCount == null)
+            return;
+        await coordinator.refreshData(workspaceId);
+        commitGrid({ total: null });
     };
 
     const readOnlyBanner = !page.editable && tableRef.kind !== "view";
@@ -343,7 +397,11 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
                             setSelectedCell(null);
                             return;
                         }
-                        setSelectedCell({ ...cell, workspaceId, objectKey: activeWorkspaceKey, dataRevision: runtime.dataRevision, keyValues: page.keyValuesFor(cell.row) });
+                        if (cell.kind === "insert") {
+                            setSelectedCell({ ...cell, workspaceId, objectKey: activeWorkspaceKey, dataRevision: runtime.dataRevision });
+                            return;
+                        }
+                        setSelectedCell({ ...cell, kind: "row", workspaceId, objectKey: activeWorkspaceKey, dataRevision: runtime.dataRevision, keyValues: page.keyValuesFor(cell.row) });
                     }}
                     scrollTarget={scrollTarget}
                     sortDirections={sortDirections}
@@ -396,6 +454,16 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
                 />
             ) : null}
             {exportOpen ? <ObjectExportMenu onClose={() => setExportOpen(false)} onExport={exportObject} /> : null}
+            {importOpen ? <ObjectImportMenu onClose={() => setImportOpen(false)} onImport={importData} /> : null}
+            {transferProgress ? (
+                <TransferProgressModal
+                    progress={transferProgress}
+                    onClose={() => {
+                        if (transferProgress.status !== "running")
+                            setTransferProgress(null);
+                    }}
+                />
+            ) : null}
             {viewerValue !== undefined ? <CellViewerModal value={viewerValue} onClose={() => setViewerValue(undefined)} /> : null}
         </div>
     );
