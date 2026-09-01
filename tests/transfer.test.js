@@ -41,7 +41,7 @@ test("database restore picks a dump file", async () => {
         const restored = await restoreDatabase({
             conn: { engine: "sqlite" },
             ctx: {},
-            driver: { async runBatch() {} },
+            driver: { async importDatabase() {} },
         }, {
             confirm: async (path) => {
                 assert.equal(path, "/tmp/exports/backup.sql");
@@ -241,6 +241,7 @@ test("failed database dump reports error progress", async () => {
     assert.equal(dumped.message, "pg_dump failed");
     assert.equal(progress.at(-1).status, "error");
     assert.equal(progress.at(-1).percent, 100);
+    assert.equal(progress.at(-1).label, "pg_dump failed");
 });
 
 test("database dump reports percent after each table", async () => {
@@ -271,118 +272,52 @@ test("database dump reports percent after each table", async () => {
     assert.deepEqual(progress.at(-1), { label: "Dump written", percent: 100, status: "done" });
 });
 
-test("database dump weights percent by row estimates", async () => {
+test("database dump exports tables before views so imports rebuild in dependency order", async () => {
     folder = "/tmp/exports";
     fileName = "database.sql";
-    const progress = [];
+    const calls = [];
     await dumpDatabase({
         conn: { name: "App DB" },
         ctx: { database: "app" },
         driver: {
             async listTables() {
-                return [{ name: "big", rowEstimate: 300 }, { name: "small", rowEstimate: 100 }];
+                return [
+                    { name: "book_list", kind: "view" },
+                    { name: "authors", kind: "table" },
+                    { name: "v2_orders", kind: "view" },
+                    { name: "books", kind: "table" },
+                ];
             },
-            async dumpDatabase() {},
+            async dumpDatabase(ctx, path, options) {
+                calls.push(options.table);
+            },
         },
-    }, { onProgress: (value) => progress.push({ label: value.label, percent: value.percent }) });
-    assert.equal(progress.find((entry) => entry.label === "Dumping big…").percent, 0);
-    assert.equal(progress.find((entry) => entry.label === "Dumping small…").percent, 75);
-    assert.equal(progress.filter((entry) => entry.percent === 100).length >= 1, true);
+    }, { onProgress: () => undefined });
+    assert.deepEqual(calls, ["authors", "books", "book_list", "v2_orders"]);
 });
 
-test("database dump falls back to equal weights when estimates are missing", async () => {
+test("database dump exports tables before views so imports rebuild in dependency order", async () => {
     folder = "/tmp/exports";
     fileName = "database.sql";
-    const progress = [];
+    const calls = [];
     await dumpDatabase({
         conn: { name: "App DB" },
         ctx: { database: "app" },
         driver: {
             async listTables() {
-                return [{ name: "accounts" }, { name: "orders" }];
+                return [
+                    { name: "book_list", kind: "view" },
+                    { name: "authors", kind: "table" },
+                    { name: "v2_orders", kind: "view" },
+                    { name: "books", kind: "table" },
+                ];
             },
-            async dumpDatabase() {},
-        },
-    }, { onProgress: (value) => progress.push({ label: value.label, percent: value.percent }) });
-    assert.equal(progress.find((entry) => entry.label === "Dumping orders…").percent, 50);
-});
-
-test("database dump with no tables reports an indeterminate single dump", async () => {
-    folder = "/tmp/exports";
-    fileName = "database.sql";
-    const progress = [];
-    const dumped = await dumpDatabase({
-        conn: { name: "App DB" },
-        ctx: { database: "app" },
-        driver: {
-            async listTables() {
-                return [];
+            async dumpDatabase(ctx, path, options) {
+                calls.push(options.table);
             },
-            async dumpDatabase() {},
         },
-    }, { onProgress: (value) => progress.push({ ...value }) });
-    assert.equal(dumped.status, "dumped");
-    assert.equal(progress[0].indeterminate, true);
-    assert.equal(progress.at(-1).status, "done");
-});
-
-test("database restore batches split statements and reports batch percent", async () => {
-    dumpFile = Array.from({ length: 250 }, (_, index) => `INSERT INTO t VALUES (${index});`).join("\n");
-    const batches = [];
-    const progress = [];
-    const restored = await restoreDatabase({
-        conn: { engine: "sqlite" },
-        ctx: {},
-        driver: { async runBatch(ctx, sql) { batches.push(sql); } },
-    }, {
-        pickFile: async () => "/tmp/exports/database.sql",
-        confirm: async () => "Import",
-        onProgress: (value) => progress.push({ percent: value.percent, indeterminate: value.indeterminate, label: value.label }),
-    });
-    assert.equal(restored.status, "restored");
-    assert.equal(batches.length, 3);
-    assert.match(batches[0], /VALUES \(0\);\n/);
-    assert.match(batches[0], /VALUES \(99\);$/);
-    assert.match(batches[2], /VALUES \(249\);$/);
-    assert.equal(progress[1].percent, 0);
-    assert.equal(progress[2].percent, 33);
-    assert.equal(progress[2].label.includes("2/3"), true);
-    assert.equal(progress[4].percent, 100);
-    dumpFile = "INSERT INTO t VALUES (1);\nINSERT INTO t VALUES (2);";
-});
-
-test("database restore falls back to single-shot import without runBatch", async () => {
-    const calls = [];
-    const progress = [];
-    const restored = await restoreDatabase({
-        conn: { engine: "sqlite" },
-        ctx: {},
-        driver: { async importDatabase(ctx, path, options) { calls.push({ path, options }); } },
-    }, {
-        pickFile: async () => "/tmp/exports/database.sql",
-        confirm: async () => "Import",
-        onProgress: (value) => progress.push({ ...value }),
-    });
-    assert.equal(restored.status, "restored");
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].options.timeoutMs, 600000);
-    assert.equal(progress[1].indeterminate, true);
-    assert.equal(progress.at(-1).status, "done");
-});
-
-test("database restore falls back when the dump cannot be read", async () => {
-    const calls = [];
-    const restored = await restoreDatabase({
-        conn: { engine: "sqlite" },
-        ctx: {},
-        driver: { async importDatabase() { calls.push("import"); } },
-    }, {
-        pickFile: async () => "/tmp/exports/database.sql",
-        confirm: async () => "Import",
-        onProgress: () => undefined,
-    });
-    assert.equal(restored.status, "restored");
-    assert.equal(calls.length, 1);
+    }, { onProgress: () => undefined });
+    assert.deepEqual(calls, ["authors", "books", "book_list", "v2_orders"]);
 });
 
 test("database dump weights percent by row estimates", async () => {
@@ -440,32 +375,7 @@ test("database dump with no tables reports an indeterminate single dump", async 
     assert.equal(progress.at(-1).status, "done");
 });
 
-test("database restore batches split statements and reports batch percent", async () => {
-    dumpFile = Array.from({ length: 250 }, (_, index) => `INSERT INTO t VALUES (${index});`).join("\n");
-    const batches = [];
-    const progress = [];
-    const restored = await restoreDatabase({
-        conn: { engine: "sqlite" },
-        ctx: {},
-        driver: { async runBatch(ctx, sql) { batches.push(sql); } },
-    }, {
-        pickFile: async () => "/tmp/exports/database.sql",
-        confirm: async () => "Import",
-        onProgress: (value) => progress.push({ percent: value.percent, indeterminate: value.indeterminate, label: value.label }),
-    });
-    assert.equal(restored.status, "restored");
-    assert.equal(batches.length, 3);
-    assert.match(batches[0], /VALUES \(0\);\n/);
-    assert.match(batches[0], /VALUES \(99\);$/);
-    assert.match(batches[2], /VALUES \(249\);$/);
-    assert.equal(progress[1].percent, 0);
-    assert.equal(progress[2].percent, 33);
-    assert.equal(progress[2].label.includes("2/3"), true);
-    assert.equal(progress[4].percent, 100);
-    dumpFile = "INSERT INTO t VALUES (1);\nINSERT INTO t VALUES (2);";
-});
-
-test("database restore falls back to single-shot import without runBatch", async () => {
+test("database restore uses native importDatabase with indeterminate progress", async () => {
     const calls = [];
     const progress = [];
     const restored = await restoreDatabase({
@@ -479,24 +389,65 @@ test("database restore falls back to single-shot import without runBatch", async
     });
     assert.equal(restored.status, "restored");
     assert.equal(calls.length, 1);
+    assert.equal(calls[0].path, "/tmp/exports/database.sql");
     assert.equal(calls[0].options.timeoutMs, 600000);
     assert.equal(progress[1].indeterminate, true);
     assert.equal(progress.at(-1).status, "done");
 });
 
-test("database restore falls back when the dump cannot be read", async () => {
-    const calls = [];
-    const restored = await restoreDatabase({
-        conn: { engine: "sqlite" },
-        ctx: {},
-        driver: { async importDatabase() { calls.push("import"); } },
-    }, {
-        pickFile: async () => "/tmp/exports/database.sql",
-        confirm: async () => "Import",
-        onProgress: () => undefined,
-    });
-    assert.equal(restored.status, "restored");
-    assert.equal(calls.length, 1);
+test("database dump weights percent by row estimates", async () => {
+    folder = "/tmp/exports";
+    fileName = "database.sql";
+    const progress = [];
+    await dumpDatabase({
+        conn: { name: "App DB" },
+        ctx: { database: "app" },
+        driver: {
+            async listTables() {
+                return [{ name: "big", rowEstimate: 300 }, { name: "small", rowEstimate: 100 }];
+            },
+            async dumpDatabase() {},
+        },
+    }, { onProgress: (value) => progress.push({ label: value.label, percent: value.percent }) });
+    assert.equal(progress.find((entry) => entry.label === "Dumping big…").percent, 0);
+    assert.equal(progress.find((entry) => entry.label === "Dumping small…").percent, 75);
+    assert.equal(progress.filter((entry) => entry.percent === 100).length >= 1, true);
+});
+
+test("database dump falls back to equal weights when estimates are missing", async () => {
+    folder = "/tmp/exports";
+    fileName = "database.sql";
+    const progress = [];
+    await dumpDatabase({
+        conn: { name: "App DB" },
+        ctx: { database: "app" },
+        driver: {
+            async listTables() {
+                return [{ name: "accounts" }, { name: "orders" }];
+            },
+            async dumpDatabase() {},
+        },
+    }, { onProgress: (value) => progress.push({ label: value.label, percent: value.percent }) });
+    assert.equal(progress.find((entry) => entry.label === "Dumping orders…").percent, 50);
+});
+
+test("database dump with no tables reports an indeterminate single dump", async () => {
+    folder = "/tmp/exports";
+    fileName = "database.sql";
+    const progress = [];
+    const dumped = await dumpDatabase({
+        conn: { name: "App DB" },
+        ctx: { database: "app" },
+        driver: {
+            async listTables() {
+                return [];
+            },
+            async dumpDatabase() {},
+        },
+    }, { onProgress: (value) => progress.push({ ...value }) });
+    assert.equal(dumped.status, "dumped");
+    assert.equal(progress[0].indeterminate, true);
+    assert.equal(progress.at(-1).status, "done");
 });
 
 test("database restore keeps the active connection context and driver timeout", async () => {
@@ -504,7 +455,7 @@ test("database restore keeps the active connection context and driver timeout", 
     const restored = await restoreDatabase({
         conn: { engine: "sqlite" },
         ctx: { database: "app", schema: "public" },
-        driver: { async runBatch(ctx, sql, options) { calls.push({ ctx, sql, options }); } },
+        driver: { async importDatabase(ctx, path, options) { calls.push({ ctx, path, options }); } },
     }, {
         pickFile: async () => "/tmp/exports/database.sql",
         confirm: async () => "Import",
@@ -513,7 +464,7 @@ test("database restore keeps the active connection context and driver timeout", 
     assert.deepEqual(restored, { status: "restored", path: "/tmp/exports/database.sql" });
     assert.equal(calls.length, 1);
     assert.deepEqual(calls[0].ctx, { database: "app", schema: "public" });
-    assert.equal(calls[0].sql, "INSERT INTO t VALUES (1);\nINSERT INTO t VALUES (2);");
+    assert.equal(calls[0].path, "/tmp/exports/database.sql");
     assert.deepEqual(calls[0].options, { timeoutMs: 600000 });
 });
 
@@ -563,16 +514,17 @@ test("failed database restore reports error progress", async () => {
     const restored = await restoreDatabase({
         conn: { engine: "sqlite" },
         ctx: {},
-        driver: { async runBatch() { throw new Error("syntax error"); } },
+        driver: { async importDatabase() { throw new Error("syntax error"); } },
     }, {
         pickFile: async () => "/tmp/exports/database.sql",
         confirm: async () => "Import",
         onProgress: (value) => progress.push(value),
     });
     assert.equal(restored.error, "RESTORE_FAILED");
-    assert.equal(restored.message, "batch 1/1: syntax error");
+    assert.equal(restored.message, "syntax error");
     assert.equal(progress.at(-1).status, "error");
     assert.equal(progress.at(-1).percent, 100);
+    assert.equal(progress.at(-1).label, "syntax error");
 });
 
 test("transfer dialog projects a determinate percent for every transfer kind", () => {

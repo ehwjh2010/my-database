@@ -230,11 +230,12 @@ export async function dumpDatabase(session, { onProgress } = {}) {
             await session.driver.dumpDatabase(session.ctx, path, { timeoutMs: TRANSFER_TIMEOUT });
         }
         else {
-            const weights = objects.map((table) => Math.max(Number(table.rowEstimate) || 0, 1));
+            const ordered = [...objects.filter((o) => o.kind !== "view"), ...objects.filter((o) => o.kind === "view")];
+            const weights = ordered.map((table) => Math.max(Number(table.rowEstimate) || 0, 1));
             const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
             let weightDone = 0;
-            for (let index = 0; index < objects.length; index++) {
-                const table = objects[index];
+            for (let index = 0; index < ordered.length; index++) {
+                const table = ordered[index];
                 emitProgress(onProgress, "dump", "running", `Dumping ${table.name}…`, transferPercent(weightDone, totalWeight));
                 await session.driver.dumpDatabase(session.ctx, path, { timeoutMs: TRANSFER_TIMEOUT, table: table.name, append: index > 0 });
                 weightDone += weights[index];
@@ -247,7 +248,7 @@ export async function dumpDatabase(session, { onProgress } = {}) {
     }
     catch (error) {
         const message = error?.message || String(error);
-        emitProgress(onProgress, "dump", "error", "Dump failed", 100);
+        emitProgress(onProgress, "dump", "error", message, 100);
         toast(message, "warning");
         return { error: "DUMP_FAILED", message };
     }
@@ -283,36 +284,13 @@ export async function restoreDatabase(session, { onProgress, pickFile = chooseDu
     }
     catch (error) {
         const message = error?.message || String(error);
-        emitProgress(onProgress, "restore", "error", "Import failed", 100);
+        emitProgress(onProgress, "restore", "error", message, 100);
         toast(message, "warning");
         return { error: "RESTORE_FAILED", message };
     }
 }
 
 async function importDump(session, path, onProgress) {
-    let statements = [];
-    try {
-        statements = splitForEngine(await readTextFile(path), session.conn.engine).map((entry) => entry.sql);
-    }
-    catch {
-        statements = [];
-    }
-    if (!statements.length || typeof session.driver.runBatch !== "function") {
-        emitProgress(onProgress, "restore", "running", "Importing database…", 0, true);
-        await session.driver.importDatabase(session.ctx, path, { timeoutMs: TRANSFER_TIMEOUT });
-        return;
-    }
-    const batches = [];
-    for (let index = 0; index < statements.length; index += STATEMENT_BATCH)
-        batches.push(statements.slice(index, index + STATEMENT_BATCH));
-    for (let index = 0; index < batches.length; index++) {
-        emitProgress(onProgress, "restore", "running", `Importing database… (${index + 1}/${batches.length})`, transferPercent(index, batches.length));
-        try {
-            await session.driver.runBatch(session.ctx, `${batches[index].join(";\n")};`, { timeoutMs: TRANSFER_TIMEOUT });
-        }
-        catch (error) {
-            error.message = `batch ${index + 1}/${batches.length}: ${error.message}`;
-            throw error;
-        }
-    }
+    emitProgress(onProgress, "restore", "running", "Importing database…", 0, true);
+    await session.driver.importDatabase(session.ctx, path, { timeoutMs: TRANSFER_TIMEOUT });
 }

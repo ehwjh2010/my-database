@@ -1,11 +1,24 @@
-import { run } from "../exec.js";
-import { writeDumpPart } from "../secure-file.js";
+import { run, runWithStdinFile } from "../exec.js";
+import { writeDumpPart, removeFile } from "../secure-file.js";
+import { writeFilteredMysqlDump } from "../mysql-dump-filter.js";
 import { detect as detectBinary, firstAvailable } from "../cli-detect.js";
 import { ensureMyCnfFile } from "../cred-file.js";
 import { quoteIdent, quoteLiteral } from "../sql/quote.js";
 import { makeResult } from "../parse/result.js";
 import { parseMysqlXml } from "../parse/xml.js";
 import { splitForEngine, statementKind } from "../sql/statement-split.js";
+
+const MERGE_DUMP_SCRIPT = String.raw`
+open(my $out, ">>", $ARGV[0]) or die $ARGV[0] . ": $!\n";
+chmod 0600, $ARGV[0];
+for my $path (@ARGV[1 .. $#ARGV]) {
+    open(my $in, "<", $path) or die $path . ": $!\n";
+    my $bytes = do { local $/; <$in> };
+    close($in) or die $path . ": $!\n";
+    print $out $bytes;
+    unlink($path) or die $path . ": $!\n";
+}
+`;
 
 const SYSTEM_DBS = new Set(["information_schema", "performance_schema", "mysql", "sys"]);
 
@@ -188,24 +201,52 @@ export function makeMysqlDriver(engine, binaries) {
             const net = ctx.conn.net;
             const credFile = await ensureMyCnfFile(ctx);
             const database = ctx.database || net.database;
-            const argv = [
+            const baseArgv = (extra) => [
                 dumpBin, `--defaults-extra-file=${credFile}`, "--protocol=TCP",
+                "--single-transaction", "--set-gtid-purged=OFF",
                 "-h", ctx.endpoint?.host || net.host,
                 "-P", String(ctx.endpoint?.port || net.port || 3306),
                 "-u", net.user,
                 database,
-                ...(opts.table ? [opts.table] : []),
+                ...extra,
             ];
-            const sql = await run(argv, { timeoutMs: opts.timeoutMs || 600000 });
-            await writeDumpPart(outPath, sql.endsWith("\n") ? sql : `${sql}\n`, Boolean(opts.append));
+            if (opts.table) {
+                if (!opts.append) {
+                    await run([...baseArgv([opts.table]), `--result-file=${outPath}`], { timeoutMs: opts.timeoutMs || 600000 });
+                    return;
+                }
+                const part = `${outPath}.part-table`;
+                try {
+                    await run([...baseArgv([opts.table]), `--result-file=${part}`], { timeoutMs: opts.timeoutMs || 600000 });
+                    await run(["perl", "-e", MERGE_DUMP_SCRIPT, outPath, part]);
+                }
+                catch (error) {
+                    await removeFile(part);
+                    throw error;
+                }
+                return;
+            }
+            const phases = [
+                baseArgv(["--no-data", "--skip-triggers", "--routines", "--events"]),
+                baseArgv(["--no-create-info", "--skip-triggers"]),
+                baseArgv(["--no-create-info", "--no-data", "--triggers"]),
+            ];
+            for (let index = 0; index < phases.length; index++) {
+                const part = index === 0 ? outPath : `${outPath}.part${index}`;
+                await run([...phases[index], `--result-file=${part}`], { timeoutMs: opts.timeoutMs || 600000 });
+            }
+            await run(["perl", "-e", MERGE_DUMP_SCRIPT, outPath, `${outPath}.part1`, `${outPath}.part2`]);
         },
 
         async importDatabase(ctx, dumpPath, opts = {}) {
-            await exec(ctx, ["-e", `source ${dumpPath}`], { timeoutMs: opts.timeoutMs || 600000 });
-        },
-
-        async runBatch(ctx, sql, opts = {}) {
-            await exec(ctx, ["-e", sql], opts);
+            const filtered = `/tmp/muxy-database-${ctx.conn.id}-import.sql`;
+            await writeFilteredMysqlDump(dumpPath, filtered);
+            try {
+                await runWithStdinFile(await baseArgv(ctx, ["--binary-mode"]), filtered, { timeoutMs: opts.timeoutMs || 600000 });
+            }
+            finally {
+                await removeFile(filtered);
+            }
         },
 
         async runBatch(ctx, sql, opts = {}) {

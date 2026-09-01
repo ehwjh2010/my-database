@@ -891,6 +891,10 @@ textarea:focus {
 .transfer-progress-label {
   color: var(--muxy-foreground-muted);
   font-size: var(--font-footnote);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  max-height: 12rem;
+  overflow: auto;
 }
 
 .linear-progress[data-progress="done"] {

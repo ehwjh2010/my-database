@@ -212,9 +212,27 @@ export const postgres = {
 
     async dumpDatabase(ctx, outPath, opts = {}) {
         const table = opts.table ? `${ctx.schema || "public"}.${opts.table}` : null;
-        const argv = ["pg_dump", "-w", "--inserts", "-d", await conninfo(ctx), ...(table ? ["-t", table] : [])];
-        const sql = await run(argv, { timeoutMs: opts.timeoutMs || 600000 });
-        await writeDumpPart(outPath, sql.endsWith("\n") ? sql : `${sql}\n`, Boolean(opts.append));
+        const conn = await conninfo(ctx);
+        if (table) {
+            const argv = ["pg_dump", "-w", "--inserts", "-d", conn, "-t", table];
+            const sql = await run(argv, { timeoutMs: opts.timeoutMs || 600000 });
+            await writeDumpPart(outPath, sql.endsWith("\n") ? sql : `${sql}\n`, Boolean(opts.append));
+            return;
+        }
+        const base = ["pg_dump", "-w", "--inserts", "-d", conn];
+        const phases = [
+            [...base, "--section=pre-data"],
+            [...base, "--section=data"],
+            [...base, "--section=post-data"],
+        ];
+        let append = Boolean(opts.append);
+        for (const argv of phases) {
+            const sql = await run(argv, { timeoutMs: opts.timeoutMs || 600000 });
+            if (!sql)
+                continue;
+            await writeDumpPart(outPath, sql.endsWith("\n") ? sql : `${sql}\n`, append);
+            append = true;
+        }
     },
 
     async importDatabase(ctx, dumpPath, opts = {}) {

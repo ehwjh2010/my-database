@@ -1,4 +1,8 @@
 const DEFAULT_TIMEOUT = 60000;
+const STDIN_FILE_EXEC = String.raw`
+open(STDIN, "<", $ARGV[0]) or die $ARGV[0] . ": $!\n";
+exec { $ARGV[1] } @ARGV[1 .. $#ARGV] or die $!;
+`;
 
 export class ExecError extends Error {
     constructor(message, res = {}) {
@@ -19,6 +23,12 @@ export async function run(argv, opts = {}) {
     if (res.exitCode !== 0)
         fail(argv, res);
     return res.stdout;
+}
+
+export async function runWithStdinFile(argv, file, opts = {}) {
+    if (!argv?.length)
+        throw new Error("Command failed: exec");
+    return run(["perl", "-e", STDIN_FILE_EXEC, file, ...argv], opts);
 }
 
 export async function tryRun(argv, opts = {}) {

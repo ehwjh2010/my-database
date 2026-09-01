@@ -76,7 +76,11 @@ test("SQLite database restore reads the dump with .read", async () => {
         return { exitCode: 0, stdout: "", stderr: "" };
     };
     await sqlite.importDatabase(ctx, "/tmp/exports/database.sql", { timeoutMs: 600000 });
-    assert.deepEqual(calls[0], ["sqlite3", "/tmp/Application Support/example.sqlite", ".read /tmp/exports/database.sql"]);
+    assert.equal(calls[0][0], "perl");
+    assert.equal(calls[0][3], "/tmp/exports/database.sql");
+    assert.equal(calls[0][4], "sqlite3");
+    assert.ok(calls[0].includes("-bail"));
+    assert.equal(calls[0].at(-1), "file:/tmp/Application%20Support/example.sqlite?mode=rw");
 });
 
 test("SQLite runBatch runs a statement batch without bail or json flags", async () => {

@@ -1,4 +1,4 @@
-import { run } from "../exec.js";
+import { run, runWithStdinFile } from "../exec.js";
 import { writeDumpPart } from "../secure-file.js";
 import { detect as detectBinary } from "../cli-detect.js";
 import { quoteIdent, quoteLiteral } from "../sql/quote.js";
@@ -119,12 +119,29 @@ export const sqlite = {
     },
 
     async dumpDatabase(ctx, outPath, opts = {}) {
-        const sql = await run([BIN, ctx.conn.sqlite.path, opts.table ? `.dump ${opts.table}` : ".dump"], { timeoutMs: opts.timeoutMs || 600000 });
-        await writeDumpPart(outPath, sql.endsWith("\n") ? sql : `${sql}\n`, Boolean(opts.append));
+        if (opts.table) {
+            const sql = await run([BIN, ctx.conn.sqlite.path, `.dump ${opts.table}`], { timeoutMs: opts.timeoutMs || 600000 });
+            await writeDumpPart(outPath, sql.endsWith("\n") ? sql : `${sql}\n`, Boolean(opts.append));
+            return;
+        }
+        const phaseArgv = (extra) => [BIN, ctx.conn.sqlite.path, ...extra];
+        const phases = [
+            phaseArgv([".schema --nosys"]),
+            phaseArgv([".dump --data-only"]),
+            phaseArgv([".sql", "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY rowid"]),
+        ];
+        let append = Boolean(opts.append);
+        for (const argv of phases) {
+            const sql = await run(argv, { timeoutMs: opts.timeoutMs || 600000 });
+            if (!sql)
+                continue;
+            await writeDumpPart(outPath, sql.endsWith("\n") ? sql : `${sql}\n`, append);
+            append = true;
+        }
     },
 
     async importDatabase(ctx, dumpPath, opts = {}) {
-        await run([BIN, ctx.conn.sqlite.path, `.read ${dumpPath}`], { timeoutMs: opts.timeoutMs || 600000 });
+        await runWithStdinFile(["sqlite3", "-bail", "-batch", databaseUri(ctx.conn.sqlite.path)], dumpPath, { timeoutMs: opts.timeoutMs || 600000 });
     },
 
     async runBatch(ctx, sql, opts = {}) {
