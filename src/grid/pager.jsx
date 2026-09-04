@@ -1,7 +1,8 @@
 import { Icon } from "../ui/icon.jsx";
 import { formatNumber } from "../lib/format.js";
+import { pageSizeOptions } from "./page-size.js";
 
-export function Pager({ page, pageSize, rowsOnPage, total, onPage, onCount, children }) {
+export function Pager({ page, pageSize, rowsOnPage, total, onPage, onPageSize, onCount, children }) {
     const from = page * pageSize + 1;
     const to = page * pageSize + rowsOnPage;
     const label = rowsOnPage
@@ -19,6 +20,17 @@ export function Pager({ page, pageSize, rowsOnPage, total, onPage, onCount, chil
             <button className="icon-btn" disabled={nextDisabled} onClick={() => onPage(page + 1)} title="Next page">
                 <Icon name="right" />
             </button>
+            <label className="pager-page-size">
+                <select
+                    title="Rows per page"
+                    value={pageSize}
+                    onChange={(event) => onPageSize(Number(event.target.value))}
+                >
+                    {pageSizeOptions(pageSize).map((size) => (
+                        <option key={size} value={size}>{size}</option>
+                    ))}
+                </select>
+            </label>
             {total == null ? (
                 <button className="btn btn-compact" onClick={onCount}>
                     Count rows

@@ -750,6 +750,7 @@ test("confirmed database changes clear SQL runtime and load the new file manifes
     assert.equal(session.sqlOwners.size, 0);
     assert.equal(session.consoleState.phase, "ready");
     assert.deepEqual(session.sqlFiles, files);
+    assert.equal(session.surface, "object");
     assert.deepEqual(calls, [["namespace", "other"], ["ensure", "other"], ["list", "other"]]);
 });
 
@@ -1321,6 +1322,68 @@ test("query state is cleaned up when workspace is closed", () => {
     assert.equal(session.queryState.has(key), false, "query state is removed after close");
 });
 
+test("SQL and table tabs share one open order and closing SQL activates the neighbor table", async () => {
+    const session = stubSession({
+        conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } },
+        sqlNamespace: { databaseDir: "/tmp/sql", fingerprint: "sqlite", databaseKey: "sqlite" },
+    });
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({
+        sqlFiles: {
+            async getNamespace() {
+                return session.sqlNamespace;
+            },
+            async createSqlFile(_, name) {
+                return { name, path: `/tmp/sql/${name}`, size: 0, mtimeMs: 0, reserved: false };
+            },
+        },
+    }));
+    const openedSql = await coordinator.newQuery();
+    const first = coordinator.openOrActivate({ database: "app", schema: "main", table: "orders" });
+    coordinator.openOrActivate({ database: "app", schema: "main", table: "items" });
+    coordinator.activateSql(openedSql.sqlTabId);
+
+    assert.deepEqual(session.tabOrder.map((tab) => tab.kind), ["sql", "object", "object"]);
+    assert.equal(session.surface, "console");
+
+    coordinator.closeSql(openedSql.sqlTabId);
+
+    assert.equal(session.surface, "object");
+    assert.equal(session.registry.activeId, first.workspaceId);
+    assert.equal(session.tabOrder[0].kind, "object");
+    assert.equal(session.tabOrder[0].id, first.workspaceId);
+    assert.deepEqual(session.sqlRegistry, { order: [], activeId: null, byId: {} });
+});
+
+test("closing a table tab between SQL tabs activates the left SQL tab", async () => {
+    const session = stubSession({
+        conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } },
+        sqlNamespace: { databaseDir: "/tmp/sql", fingerprint: "sqlite", databaseKey: "sqlite" },
+    });
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({
+        sqlFiles: {
+            async getNamespace() {
+                return session.sqlNamespace;
+            },
+            async createSqlFile(_, name) {
+                return { name, path: `/tmp/sql/${name}`, size: 0, mtimeMs: 0, reserved: false };
+            },
+        },
+    }));
+    const firstSql = await coordinator.newQuery();
+    const { workspaceId } = coordinator.openOrActivate({ database: "app", schema: "main", table: "orders" });
+    const secondSql = await coordinator.createAndOpenFile("other.sql");
+    coordinator.setActive(workspaceId);
+
+    coordinator.close(workspaceId);
+
+    assert.equal(session.surface, "console");
+    assert.equal(session.sqlRegistry.activeId, firstSql.sqlTabId);
+    assert.deepEqual(session.tabOrder, [
+        { kind: "sql", id: firstSql.sqlTabId },
+        { kind: "sql", id: secondSql.sqlTabId },
+    ]);
+});
+
 test("enterConsole loads the current database file manifest without opening a file", async () => {
     const calls = [];
     const session = stubSession({ conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } } });
@@ -1342,6 +1405,7 @@ test("enterConsole loads the current database file manifest without opening a fi
 
     const pending = coordinator.enterConsole();
     assert.equal(session.consoleState.phase, "loading");
+    assert.equal(session.surface, "console");
     const result = await pending;
 
     assert.deepEqual(result.files, [{ name: "console.sql", path: "/tmp/sql/console.sql", reserved: true }]);
@@ -1351,6 +1415,28 @@ test("enterConsole loads the current database file manifest without opening a fi
     assert.equal(calls[0][0], "namespace");
     assert.equal(calls[0][1].database, "/tmp/app.sqlite");
     assert.deepEqual(calls.map(([kind]) => kind), ["namespace", "ensure", "list"]);
+});
+
+test("enterConsole can load the file manifest without leaving the object surface", async () => {
+    const session = stubSession({ conn: { engine: "sqlite", sqlite: { path: "/tmp/app.sqlite" } } });
+    const coordinator = createWorkspaceCoordinator(session, stubAdapters({
+        sqlFiles: {
+            async getNamespace() {
+                return { databaseDir: "/tmp/sql", fingerprint: "sqlite", databaseKey: "sqlite" };
+            },
+            async ensureConsoleFile() {},
+            async listSqlFiles() {
+                return [{ name: "console.sql", path: "/tmp/sql/console.sql", reserved: true }];
+            },
+        },
+    }));
+
+    assert.equal(session.surface, "object");
+    await coordinator.enterConsole({ activate: false });
+
+    assert.equal(session.surface, "object");
+    assert.equal(session.consoleState.phase, "ready");
+    assert.deepEqual(session.sqlRegistry, { order: [], activeId: null, byId: {} });
 });
 
 test("enterConsole keeps the original file error and retry reruns the same load", async () => {

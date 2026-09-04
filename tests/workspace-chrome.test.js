@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { closeWorkspaceTabIntent, projectWorkspaceTabs, sqlFileMenuItems, workspaceSwitchMenuItems, workspaceTabTitle } from "../src/workbench/workspace-chrome.js";
+import { closeWorkspaceTabIntent, flattenSessionTabs, parseTabStripKey, projectWorkspaceTabs, sqlFileMenuItems, workspaceSwitchMenuItems, workspaceTabTitle } from "../src/workbench/workspace-chrome.js";
 
 function makeRegistry() {
     return {
@@ -131,6 +131,27 @@ test("projectWorkspaceTabs renders SQL tabs with code icons and no dirty state",
         dirtyLabel: "Unsaved changes",
         closeLabel: "Close New Query",
     }]);
+});
+
+test("flattenSessionTabs lists SQL and object tabs in mixed open order", () => {
+    const flattened = flattenSessionTabs({
+        tabOrder: [{ kind: "sql", id: 4 }, { kind: "object", id: 1 }],
+        sqlRegistry: {
+            activeId: 4,
+            byId: { 4: { id: 4, key: "sql:4", kind: "sql", name: "console.sql", title: "console.sql" } },
+        },
+        registry: {
+            activeId: 1,
+            byId: { 1: { id: 1, key: "k1", ref: { table: "orders", kind: "table" }, view: "data" } },
+        },
+        surface: "console",
+    });
+    const tabs = projectWorkspaceTabs({ ...flattened, changesByKey: new Map() });
+
+    assert.deepEqual(parseTabStripKey(tabs[0].id), { kind: "sql", id: 4 });
+    assert.deepEqual(tabs.map((tab) => tab.name), ["console.sql", "orders"]);
+    assert.deepEqual(tabs.map((tab) => tab.icon), ["code", "table"]);
+    assert.deepEqual(tabs.map((tab) => tab.active), [true, false]);
 });
 
 test("projectWorkspaceTabs reflects SQL draft dirty state from the SQL tab entry", () => {

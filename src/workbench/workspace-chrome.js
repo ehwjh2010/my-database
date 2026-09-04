@@ -2,6 +2,36 @@ import { pendingChangeCountFor } from "./workspace-state.js";
 
 export const WORKSPACE_DIRTY_LABEL = "Unsaved changes";
 
+export function tabStripKey(kind, id) {
+    return `${kind}:${id}`;
+}
+
+export function parseTabStripKey(key) {
+    const match = String(key).match(/^(sql|object):(\d+)$/);
+    if (!match)
+        return null;
+    return { kind: match[1], id: Number(match[2]) };
+}
+
+export function flattenSessionTabs({ tabOrder = [], registry, sqlRegistry, surface } = {}) {
+    const order = [];
+    const byId = {};
+    let activeId = null;
+    for (const item of tabOrder) {
+        const source = item.kind === "sql" ? sqlRegistry?.byId?.[item.id] : registry?.byId?.[item.id];
+        if (!source)
+            continue;
+        const id = tabStripKey(item.kind, item.id);
+        order.push(id);
+        byId[id] = { ...source, id, kind: item.kind === "sql" ? "sql" : source.kind };
+        if (item.kind === "sql" && surface === "console" && sqlRegistry?.activeId === item.id)
+            activeId = id;
+        if (item.kind === "object" && surface === "object" && registry?.activeId === item.id)
+            activeId = id;
+    }
+    return { order, byId, activeId };
+}
+
 export function workspaceTabTitle(ref, view) {
     if (view === "structure")
         return `DDL: ${ref?.table ?? ""}`;

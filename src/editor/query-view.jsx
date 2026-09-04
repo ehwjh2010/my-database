@@ -9,7 +9,6 @@ import { ExportMenuModal } from "../transfer/transfer-menu.jsx";
 import { SqlEditorView } from "./sql-editor-view.jsx";
 import { Results } from "./results.jsx";
 import { ResultsPane } from "./results-pane.jsx";
-import { commitQueryError, commitQueryResult } from "../workbench/query-runtime.js";
 
 export function schemaForCompletion(session) {
     const schema = {};
@@ -92,7 +91,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                     : await session.driver.runQuery(snapshot.operationCtx, snapshot.sql, { timeoutMs: session.timeoutMs });
             } catch (error) {
                 const diagnostic = isExplain ? null : queryErrorDiagnostic({ engine: session.conn.engine, sql: snapshot.sql, documentOffset: snapshot.executionRange.from, error });
-                if (!commitQueryError(session, snapshot, error.message, diagnostic))
+                if (!session.coordinator.commitQueryError(snapshot, error.message, diagnostic))
                     return;
                 if (isActive()) {
                     setStatus("Error");
@@ -100,12 +99,10 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                 }
                 return;
             }
-            if (!commitQueryResult(session, snapshot, data))
+            if (!session.coordinator.commitQueryResult(snapshot, data))
                 return;
-            const rows = data.reduce((sum, r) => sum + r.rows.length, 0);
-            const duration = data.reduce((sum, r) => sum + (r.durationMs || 0), 0);
             if (isActive()) {
-                setStatus(`Done \u00b7 ${rows} rows \u00b7 ${duration}ms`);
+                setStatus("Ready");
                 setResultsOpen(true);
             }
         },
@@ -204,14 +201,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
     return (
         <div className="flex min-h-0 flex-1">
             <div className="flex min-w-0 flex-1 flex-col">
-                <div className="toolbar sql-editor-toolbar border-b" style={{ borderColor: "var(--muxy-border)" }}>
-                    <button className="btn btn-compact btn-primary" disabled={qs.queryRunning} onClick={run}>
-                        <Icon name="play" />
-                        Run
-                    </button>
-                    <button className="btn btn-compact" title="Explain the selected SQL or current statement" disabled={qs.queryRunning} onClick={runExplain}>
-                        Explain
-                    </button>
+                <div className="toolbar border-b" style={{ borderColor: "var(--muxy-border)" }}>
                     <div className="flex-1" />
                     <button className={`icon-btn${resultsOpen ? " active" : ""}`} title={resultsOpen ? "Hide results" : "Show results"} disabled={!hasResults} onClick={() => setResultsOpen(!resultsOpen)}>
                         <Icon name="table" />

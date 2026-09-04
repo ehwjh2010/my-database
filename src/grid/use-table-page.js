@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { buildSelect } from "../lib/sql/select-builder.js";
 import { createChanges, isEditable } from "./pending-changes.js";
+import { fetchTablePageResult } from "./table-page-query.js";
 import { dataRuntimeFor, isCurrentDataRuntime, nextDataRequest } from "../workbench/data-runtime.js";
 
-const GRID_KEYS = ["page", "rawWhere", "rawOrderBy"];
+const GRID_KEYS = ["page", "rawWhere", "rawOrderBy", "pageSize"];
 
 function sameValue(left, right) {
     if (left === right)
@@ -34,6 +34,7 @@ function snapshotGridState(gridState) {
         page: gridState.page,
         rawWhere: gridState.rawWhere,
         rawOrderBy: gridState.rawOrderBy,
+        pageSize: gridState.pageSize ?? null,
     });
 }
 
@@ -118,16 +119,9 @@ export async function loadTablePage(session, target, runtime, request) {
     const changes = changesFor(session, target, info);
     const editable = target.tableRef.kind !== "view" && isEditable(changes);
     const useRowid = changes.keyColumns?.[0] === "__rowid";
-    const sql = buildSelect(session.conn.engine, target.tableRef, {
-        rawWhere: target.gridState.rawWhere,
-        rawOrderBy: target.gridState.rawOrderBy,
-        limit: session.pageSize,
-        offset: target.gridState.page * session.pageSize,
-        rowid: useRowid,
-    });
     const started = performance.now();
-    const results = await session.driver.runQuery(target.driverContext, sql, { timeoutMs: session.timeoutMs });
-    return buildPage(info, changes, target, results[0], started);
+    const raw = await fetchTablePageResult(session, target, useRowid);
+    return buildPage(info, changes, target, raw, started);
 }
 
 export function useTablePage(session, tableRef, gridState, workspaceKey, dataRevision, workspaceId) {

@@ -8,12 +8,12 @@ import { closeTunnel } from "../lib/tunnel.js";
 import { clearCredFiles } from "../lib/cred-file.js";
 import { DataView } from "../grid/data-view.jsx";
 import { QueryView } from "../editor/query-view.jsx";
-import { ConsoleView, NewSqlFileModal, RenameSqlFileModal } from "../editor/console-view.jsx";
+import { NewSqlFileModal, RenameSqlFileModal } from "../editor/console-view.jsx";
 import { StructureView } from "../structure/structure-view.jsx";
 import { DatabaseExportModal, DatabaseImportModal } from "../transfer/transfer-menu.jsx";
 import { WorkspaceTabs } from "./workspace-tabs.jsx";
 import { objectCacheKey } from "./workspace-state.js";
-import { sqlFileMenuItems } from "./workspace-chrome.js";
+import { flattenSessionTabs, parseTabStripKey, sqlFileMenuItems } from "./workspace-chrome.js";
 import { dumpDatabase, restoreDatabase } from "../transfer/transfer.js";
 import { TransferProgressModal } from "../transfer/transfer-progress-modal.jsx";
 import { toast } from "../ui/toast.js";
@@ -35,7 +35,7 @@ function fileErrorMessage(error) {
 }
 
 export function Workbench() {
-    const { session, view, surface, ref, order, activeId, byId, activeSqlId, activateWorkspace, closeWorkspace, createAndOpenFile, openSqlFile, enterConsole, setStatus, refreshSchema, schemaEpoch, queryHooksRef, newFileRef, hasDatabase } = useSession();
+    const { session, view, surface, ref, activeSqlId, activateWorkspace, activateSql, closeWorkspace, createAndOpenFile, openSqlFile, enterConsole, closeSql, setStatus, refreshSchema, schemaEpoch, queryHooksRef, newFileRef, hasDatabase } = useSession();
     const [databaseExportOpen, setDatabaseExportOpen] = useState(false);
     const [databaseImportOpen, setDatabaseImportOpen] = useState(false);
     const [dumpProgress, setDumpProgress] = useState(null);
@@ -52,8 +52,6 @@ export function Workbench() {
         }
         setNewFileError(null);
         setNewFileOpen(true);
-        if (surface !== "console")
-            enterConsole().catch(() => undefined);
     };
 
     const createFile = async (name) => {
@@ -118,35 +116,68 @@ export function Workbench() {
         }
     };
 
+    const closeSqlFile = (tab) => {
+        const result = closeSql(tab.id);
+        if (result?.error)
+            toast(fileErrorMessage(result), "error");
+    };
+
     useEffect(() => {
         if (!newFileRef)
             return;
         newFileRef.current = openNewFile;
         return () => { newFileRef.current = null; };
-    }, [newFileRef, hasDatabase, surface, enterConsole]);
+    }, [newFileRef, hasDatabase]);
 
     const newMenuItems = consolePhase === "ready"
         ? sqlFileMenuItems({ files: session.sqlFiles, onCreate: openNewFile, onOpen: openFile })
         : [];
-    const objectTabMenuItems = (tab) => {
-        const table = byId[tab.id]?.ref?.table;
+    const objectTabMenuItems = (id) => {
+        const table = session.registry.byId[id]?.ref?.table;
         return table ? [{ label: "Copy Table Name", onClick: () => copyToClipboard(table) }] : [];
     };
-    const sqlTabMenuItems = (tab) => {
-        const entry = session.sqlRegistry.byId[tab.id];
-        if (!entry || entry.reserved || entry.name?.toLowerCase() === "console.sql")
+    const sqlTabMenuItems = (id) => {
+        const entry = session.sqlRegistry.byId[id];
+        if (!entry)
             return [];
+        const tab = { id };
+        if (entry.reserved || entry.name?.toLowerCase() === "console.sql")
+            return [{ label: "Close", onClick: () => closeSqlFile(tab) }];
         return [
             { label: "Rename...", onClick: () => openRenameFile(tab) },
             { separator: true },
             { label: "Delete", onClick: () => trashFile(tab) },
+            { separator: true },
+            { label: "Close", onClick: () => closeSqlFile(tab) },
         ];
     };
-    const activeSqlTab = session.sqlRegistry.byId[activeSqlId];
+    const strip = flattenSessionTabs({ tabOrder: session.tabOrder, registry: session.registry, sqlRegistry: session.sqlRegistry, surface });
+    const activateStrip = (key) => {
+        const tab = parseTabStripKey(key);
+        if (tab?.kind === "sql")
+            activateSql(tab.id);
+        else if (tab?.kind === "object")
+            activateWorkspace(tab.id);
+    };
+    const closeStrip = (key) => {
+        const tab = parseTabStripKey(key);
+        if (tab?.kind === "sql")
+            closeSqlFile({ id: tab.id });
+        else if (tab?.kind === "object")
+            closeWorkspace(tab.id);
+    };
+    const tabMenuItems = (tab) => {
+        const parsed = parseTabStripKey(tab.id);
+        if (parsed?.kind === "sql")
+            return sqlTabMenuItems(parsed.id);
+        if (parsed?.kind === "object")
+            return objectTabMenuItems(parsed.id);
+        return [];
+    };
 
     useEffect(() => {
         if (hasDatabase && consolePhase === "missing")
-            enterConsole().catch(() => undefined);
+            enterConsole({ activate: false }).catch(() => undefined);
     }, [consolePhase, enterConsole, hasDatabase]);
 
     useEffect(() => {
@@ -177,17 +208,16 @@ export function Workbench() {
     const main = () => {
         if (surface === "console") {
             const sqlEntry = session.sqlRegistry.byId[activeSqlId];
-            if (!sqlEntry)
-                return <ConsoleView state={session.consoleState} hasDatabase={hasDatabase} hasQueryTab={false} onNewQuery={openNewFile} onOpenFile={openFile} onRetry={() => enterConsole().catch(() => undefined)} />;
-            return <QueryView key={`sql:${activeSqlId}`} session={session} sqlTabId={activeSqlId} setStatus={setStatus} queryHooksRef={queryHooksRef} />;
+            if (sqlEntry)
+                return <QueryView key={`sql:${activeSqlId}`} session={session} sqlTabId={activeSqlId} setStatus={setStatus} queryHooksRef={queryHooksRef} />;
         }
         if (view === "query")
-            return <QueryView key={activeId} session={session} workspaceId={activeId} setStatus={setStatus} queryHooksRef={queryHooksRef} />;
+            return <QueryView key={session.registry.activeId} session={session} workspaceId={session.registry.activeId} setStatus={setStatus} queryHooksRef={queryHooksRef} />;
         if (!ref)
             return <EmptyState icon="table" description="从左侧选择一张表" />;
         if (view === "structure")
-            return <StructureView key={`${schemaEpoch}:${ref.table}`} session={session} workspaceId={activeId} tableRef={ref} />;
-        return <DataView key={`${schemaEpoch}:${objectCacheKey(ref)}`} session={session} tableRef={ref} workspaceId={activeId} setStatus={setStatus} />;
+            return <StructureView key={`${schemaEpoch}:${ref.table}`} session={session} workspaceId={session.registry.activeId} tableRef={ref} />;
+        return <DataView key={`${schemaEpoch}:${objectCacheKey(ref)}`} session={session} tableRef={ref} workspaceId={session.registry.activeId} setStatus={setStatus} />;
     };
 
     return (
@@ -201,19 +231,14 @@ export function Workbench() {
                 />
                 <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                     <WorkspaceTabs
-                        order={order}
-                        activeId={surface === "object" ? activeId : null}
-                        byId={byId}
+                        order={strip.order}
+                        activeId={strip.activeId}
+                        byId={strip.byId}
                         changesByKey={session.changes}
-                        onActivate={activateWorkspace}
-                        onClose={closeWorkspace}
+                        onActivate={activateStrip}
+                        onClose={closeStrip}
                         newMenuItems={newMenuItems}
-                        tabMenuItems={objectTabMenuItems}
-                        consoleActive={surface === "console"}
-                        consoleDisabled={!hasDatabase}
-                        consoleName={activeSqlTab?.name}
-                        consoleTabMenuItems={() => activeSqlTab ? sqlTabMenuItems(activeSqlTab) : []}
-                        onConsole={() => enterConsole().catch(() => undefined)}
+                        tabMenuItems={tabMenuItems}
                     />
                     <div className="flex min-h-0 min-w-0 flex-1 flex-col">{main()}</div>
                 </div>

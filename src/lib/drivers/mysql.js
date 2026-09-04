@@ -5,7 +5,7 @@ import { detect as detectBinary, firstAvailable } from "../cli-detect.js";
 import { ensureMyCnfFile } from "../cred-file.js";
 import { quoteIdent, quoteLiteral } from "../sql/quote.js";
 import { makeResult } from "../parse/result.js";
-import { parseMysqlXml } from "../parse/xml.js";
+import { mysqlXmlComplete, parseMysqlXml } from "../parse/xml.js";
 import { splitForEngine, statementKind } from "../sql/statement-split.js";
 
 const MERGE_DUMP_SCRIPT = String.raw`
@@ -71,6 +71,8 @@ export function makeMysqlDriver(engine, binaries) {
         const started = performance.now();
         const stdout = await exec(ctx, ["--xml", "-e", `${sql.replace(/;\s*$/, "")};SELECT ROW_COUNT() AS __rc`], opts);
         const durationMs = Math.round(performance.now() - started);
+        if (!mysqlXmlComplete(stdout))
+            throw new Error("MySQL result was truncated");
         const sets = parseMysqlXml(stdout);
         const rcSet = sets.pop();
         const rc = Number(rcSet?.rows?.[0]?.[0] ?? -1);
@@ -236,6 +238,24 @@ export function makeMysqlDriver(engine, binaries) {
                 await run([...phases[index], `--result-file=${part}`], { timeoutMs: opts.timeoutMs || 600000 });
             }
             await run(["perl", "-e", MERGE_DUMP_SCRIPT, outPath, `${outPath}.part1`, `${outPath}.part2`]);
+        },
+
+        async clearDatabase(ctx, opts = {}) {
+            const tables = await this.listTables(ctx);
+            const drop = (kind) => tables
+                .filter((t) => t.kind === kind)
+                .map((t) => quoteIdent(engine, t.name))
+                .join(", ");
+            const parts = [];
+            const tableNames = drop("table");
+            const viewNames = drop("view");
+            if (tableNames)
+                parts.push(`DROP TABLE IF EXISTS ${tableNames}`);
+            if (viewNames)
+                parts.push(`DROP VIEW IF EXISTS ${viewNames}`);
+            if (!parts.length)
+                return;
+            await exec(ctx, ["-e", `SET FOREIGN_KEY_CHECKS = 0; ${parts.join("; ")}; SET FOREIGN_KEY_CHECKS = 1;`], opts);
         },
 
         async importDatabase(ctx, dumpPath, opts = {}) {

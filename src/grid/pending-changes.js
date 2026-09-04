@@ -78,6 +78,28 @@ export function rowHasPending(changes, keyValues) {
     return changes.edits.has(key) || changes.deletes.has(key);
 }
 
+export function revertCell(changes, keyValues, column) {
+    const key = rowKey(keyValues);
+    const entry = changes.edits.get(key);
+    if (!entry?.cells.has(column))
+        return false;
+    entry.cells.delete(column);
+    entry.originals.delete(column);
+    if (!entry.cells.size)
+        changes.edits.delete(key);
+    changes.revision += 1;
+    return true;
+}
+
+export function revertInsertCell(changes, id, column) {
+    const insert = changes.inserts.find((entry) => entry.id === id);
+    if (!insert?.cells.has(column))
+        return false;
+    insert.cells.delete(column);
+    changes.revision += 1;
+    return true;
+}
+
 export function revertRow(changes, keyValues) {
     const key = rowKey(keyValues);
     const hadEdit = changes.edits.delete(key);

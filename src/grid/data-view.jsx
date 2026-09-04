@@ -1,5 +1,4 @@
 import { useEffect, useReducer, useState } from "react";
-import { EmptyState } from "../ui/empty-state.jsx";
 import { Icon } from "../ui/icon.jsx";
 import { toast } from "../ui/toast.js";
 import { buildCount } from "../lib/sql/select-builder.js";
@@ -7,11 +6,13 @@ import { buildChangeScript } from "../lib/sql/change-script.js";
 import { chooseExportPath, chooseImportPath, copyResult, exportCommittedObject, importCommittedObject } from "../transfer/transfer.js";
 import { TransferProgressModal } from "../transfer/transfer-progress-modal.jsx";
 import { copyToClipboard } from "../lib/clipboard.js";
-import { setEdit, toggleDelete, addInsert, removeInsert, clearChanges, isDeleted, rowHasPending, revertRow } from "./pending-changes.js";
+import { setEdit, toggleDelete, addInsert, removeInsert, clearChanges, isDeleted, changeCount } from "./pending-changes.js";
+import { applyRevertSelection, EMPTY_SELECTION, expandRect, pointFromCell, rowKeyFromPoint, rowRangeSelection, selectionHasPending, singleCellSelection, singleRowSelection, toggleCellSelection, toggleRowSelection } from "./grid-selection.js";
 import { useTablePage } from "./use-table-page.js";
 import { DataGrid } from "./data-grid.jsx";
 import { FilterBar } from "./filter-bar.jsx";
 import { Pager } from "./pager.jsx";
+import { resolvePageSize } from "./page-size.js";
 import { nextOrderBy, parseOrderBy } from "./order-by.js";
 import { DataToolbar } from "./data-toolbar.jsx";
 import { ReviewSheet } from "./review-sheet.jsx";
@@ -19,7 +20,6 @@ import { CellViewerModal } from "./cell-viewer.jsx";
 import { useSession } from "../workbench/session-context.jsx";
 import { objectCacheKey, isCurrentDataApply, isCurrentDataCount, isCurrentDataExport } from "../workbench/workspace-state.js";
 import { dataRuntimeFor, initialGridState, invalidateDataRuntime } from "../workbench/data-runtime.js";
-import { changeCount } from "./pending-changes.js";
 import { ObjectExportMenu, ObjectImportMenu } from "./object-export-menu.jsx";
 
 export function gridStateFor(session, ref) {
@@ -56,6 +56,7 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
     const [, bumpChanges] = useReducer((n) => n + 1, 0);
     const [editing, setEditing] = useState(null);
     const [selectedCell, setSelectedCell] = useState(null);
+    const [selection, setSelection] = useState(EMPTY_SELECTION);
     const [scrollTarget, setScrollTarget] = useState(null);
     const [review, setReview] = useState(null);
     const [viewerValue, setViewerValue] = useState(undefined);
@@ -68,6 +69,16 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
     };
 
     const page = useTablePage(session, tableRef, gridState, activeWorkspaceKey, runtime.dataRevision, workspaceId);
+    const pageSize = resolvePageSize(gridState, session);
+    const insertIds = (page.changes?.inserts || []).map((insert) => insert.id);
+    const selectionCtx = {
+        columns: page.displayColumns || [],
+        columnCount: page.displayColumns?.length || 0,
+        rowCount: page.displayRows?.length || 0,
+        insertIds,
+        keyValuesFor: page.keyValuesFor,
+        pendingCount: page.changes ? changeCount(page.changes) : 0,
+    };
     const sameGrid = Boolean(selectedCell
         && selectedCell.workspaceId === workspaceId
         && selectedCell.objectKey === activeWorkspaceKey
@@ -78,16 +89,15 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
         && page.displayRows?.[selectedCell.row]
         && page.changes);
     const selectionIsCurrent = insertSelected || (existingSelected && !isDeleted(page.changes, selectedCell.keyValues));
-    const hasSelectedPending = insertSelected || (existingSelected && rowHasPending(page.changes, selectedCell.keyValues));
+    const hasRevertTarget = Boolean(page.editable && page.changes && selectionHasPending(selection, page.changes, selectionCtx));
 
     const toolbarInput = {
         hasObject: Boolean(tableRef),
         pageState: page.loading ? "loading" : page.error ? "error" : page.displayRows.length ? "ready" : "empty",
         editable: Boolean(page.editable),
         hasStableSelection: selectionIsCurrent,
-        hasRevertSelection: insertSelected || existingSelected,
-        hasSelectedPending,
-        pendingCount: page.changes ? changeCount(page.changes) : 0,
+        hasRevertTarget,
+        pendingCount: selectionCtx.pendingCount,
         operationKind: dataOperation?.kind || "idle",
         importSupported: Boolean(session.driver?.capabilities?.importData),
         transferProgress,
@@ -97,7 +107,8 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
 
     useEffect(() => {
         setSelectedCell(null);
-    }, [activeWorkspaceKey, runtime.dataRevision, gridState.page, gridState.rawWhere, gridState.rawOrderBy, session.pageSize]);
+        setSelection(EMPTY_SELECTION);
+    }, [activeWorkspaceKey, runtime.dataRevision, gridState.page, gridState.rawWhere, gridState.rawOrderBy, pageSize]);
 
     useEffect(() => {
         setTransferProgress(null);
@@ -112,12 +123,16 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
         if (!columnFocus || columnFocus.workspaceId !== workspaceId || page.loading)
             return;
         setSelectedCell(null);
+        setSelection(EMPTY_SELECTION);
         if (!page.error) {
             const column = page.displayColumns.findIndex((entry) => entry.name === columnFocus.columnName);
             if (column >= 0) {
                 const row = page.displayRows.length ? 0 : null;
-                if (row !== null)
-                    setSelectedCell({ row, column, workspaceId, objectKey: activeWorkspaceKey, dataRevision: runtime.dataRevision, keyValues: page.keyValuesFor(row) });
+                if (row !== null) {
+                    const cell = { row, column, kind: "row", workspaceId, objectKey: activeWorkspaceKey, dataRevision: runtime.dataRevision, keyValues: page.keyValuesFor(row) };
+                    setSelectedCell(cell);
+                    setSelection(singleCellSelection(pointFromCell(cell)));
+                }
                 setScrollTarget({ token: columnFocus.token, row, column });
             }
         }
@@ -232,8 +247,73 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
             return;
         const insert = addInsert(model);
         bumpPendingChanges();
-        setSelectedCell({ kind: "insert", insertId: insert.id, column: 0, workspaceId, objectKey: activeWorkspaceKey, dataRevision: runtime.dataRevision });
+        const cell = { kind: "insert", insertId: insert.id, column: 0, workspaceId, objectKey: activeWorkspaceKey, dataRevision: runtime.dataRevision };
+        setSelectedCell(cell);
+        setSelection(singleCellSelection(pointFromCell(cell)));
         setEditing({ kind: "insert", insertId: insert.id, column: page.displayColumns[0]?.name });
+    };
+
+    const annotateCell = (cell) => {
+        if (!cell)
+            return null;
+        if (cell.kind === "insert")
+            return { ...cell, workspaceId, objectKey: activeWorkspaceKey, dataRevision: runtime.dataRevision };
+        return { ...cell, kind: "row", workspaceId, objectKey: activeWorkspaceKey, dataRevision: runtime.dataRevision, keyValues: page.keyValuesFor(cell.row) };
+    };
+
+    const selectGridCell = (cell, options = {}) => {
+        if (!cell) {
+            setSelectedCell(null);
+            setSelection(EMPTY_SELECTION);
+            return;
+        }
+        const nextCell = annotateCell(cell);
+        setSelectedCell(nextCell);
+        if (options.focusOnly)
+            return;
+        const point = pointFromCell(nextCell);
+        if (options.row) {
+            const key = rowKeyFromPoint(point);
+            if (options.additive)
+                setSelection(toggleRowSelection(selection, key));
+            else if (options.extend) {
+                const fromPoint = pointFromCell(selectedCell);
+                const from = selection.kind === "rows" && selection.keys.length
+                    ? selection.keys[selection.keys.length - 1]
+                    : (fromPoint ? rowKeyFromPoint(fromPoint) : key);
+                setSelection(rowRangeSelection(from, key, selectionCtx.rowCount, selectionCtx.insertIds));
+            }
+            else
+                setSelection(singleRowSelection(key));
+            return;
+        }
+        if (options.extend) {
+            const current = pointFromCell(selectedCell);
+            const anchor = selection.kind === "rect" ? selection.anchor : current;
+            if (anchor)
+                setSelection(expandRect(anchor, point));
+            else
+                setSelection(singleCellSelection(point));
+            return;
+        }
+        if (options.additive) {
+            setSelection(toggleCellSelection(selection, point, selectionCtx));
+            return;
+        }
+        setSelection(singleCellSelection(point));
+    };
+
+    const revertSelected = () => {
+        if (mutationLocked || !page.editable || !hasRevertTarget)
+            return;
+        setEditing(null);
+        if (!applyRevertSelection(model, selection, selectionCtx))
+            return;
+        bumpPendingChanges();
+        if (selectedCell?.kind === "insert" && !model.inserts.some((entry) => entry.id === selectedCell.insertId)) {
+            setSelectedCell(null);
+            setSelection(EMPTY_SELECTION);
+        }
     };
 
     const toolbarAction = (id) => {
@@ -241,19 +321,8 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
             return refreshData();
         if (id === "new-row")
             return addRow();
-        if (id === "revert-selected") {
-            if (mutationLocked || !page.editable || !hasSelectedPending)
-                return;
-            if (selectedCell.kind === "insert") {
-                changes.removeInsert(selectedCell.insertId);
-                if (editing?.kind === "insert" && editing.insertId === selectedCell.insertId)
-                    setEditing(null);
-                setSelectedCell(null);
-            }
-            else
-                revertRow(model, page.keyValuesFor(selectedCell.row));
-            return bumpPendingChanges();
-        }
+        if (id === "revert-selected")
+            return revertSelected();
         if (id === "review-dml")
             return openReview(false);
         if (id === "apply")
@@ -382,6 +451,8 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
             <div className="flex min-h-0 flex-1 flex-col">
                 <DataGrid
                     page={page}
+                    pageIndex={gridState.page}
+                    pageSize={pageSize}
                     changes={changes}
                     editable={page.editable}
                     mutationLocked={mutationLocked}
@@ -392,17 +463,11 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
                     onCopyColumnName={copyText}
                     onViewCell={(value) => setViewerValue(value)}
                     selectedCell={selectedCell}
-                    onSelectCell={(cell) => {
-                        if (!cell) {
-                            setSelectedCell(null);
-                            return;
-                        }
-                        if (cell.kind === "insert") {
-                            setSelectedCell({ ...cell, workspaceId, objectKey: activeWorkspaceKey, dataRevision: runtime.dataRevision });
-                            return;
-                        }
-                        setSelectedCell({ ...cell, kind: "row", workspaceId, objectKey: activeWorkspaceKey, dataRevision: runtime.dataRevision, keyValues: page.keyValuesFor(cell.row) });
-                    }}
+                    selection={selection}
+                    onSelectCell={selectGridCell}
+                    onClearSelection={() => setSelection(EMPTY_SELECTION)}
+                    onRevertSelected={revertSelected}
+                    canRevert={hasRevertTarget && !mutationLocked}
                     scrollTarget={scrollTarget}
                     sortDirections={sortDirections}
                     onSort={(column) => {
@@ -415,10 +480,11 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
             <div className="toolbar-footer border-t" style={{ borderColor: "var(--muxy-border)" }}>
                 <Pager
                     page={gridState.page}
-                    pageSize={session.pageSize}
+                    pageSize={pageSize}
                     rowsOnPage={page.displayRows.length}
                     total={gridState.total}
                     onPage={(p) => commitGrid({ page: Math.max(0, p) })}
+                    onPageSize={(size) => commitGrid({ pageSize: size, page: 0, total: null })}
                     onCount={async () => {
                         const snapshot = coordinator.initiateDataCount(workspaceId, gridState);
                         if (snapshot.error) {

@@ -10,6 +10,12 @@ function decodeEntities(text) {
 
 const FIELD_PATTERN = /<field name="([^"]*)"([^>]*?)\/>|<field name="([^"]*)"[^>]*>([\s\S]*?)<\/field>/g;
 
+export function mysqlXmlComplete(text) {
+    const opens = text.match(/<resultset\b/g)?.length || 0;
+    const closes = text.match(/<\/resultset>/g)?.length || 0;
+    return opens === closes;
+}
+
 export function parseMysqlXml(text) {
     const results = [];
     const resultsets = text.match(/<resultset\b[\s\S]*?<\/resultset>/g) || [];

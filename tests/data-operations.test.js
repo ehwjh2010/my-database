@@ -191,3 +191,36 @@ test("toolbar projection gives operation and page readiness the documented prior
     assert.equal(toolbar.byId.export.disabledReason, "DATA_OPERATION_IN_PROGRESS");
     assert.equal(toolbar.byId.ddl.enabled, true);
 });
+
+test("toolbar enables Revert Selected with no selection when pending changes exist", () => {
+    const toolbar = deriveDataToolbar({
+        hasObject: true,
+        pageState: "ready",
+        editable: true,
+        hasStableSelection: false,
+        hasRevertTarget: true,
+        pendingCount: 3,
+        operationKind: "idle",
+        importSupported: true,
+    });
+
+    assert.equal(toolbar.byId["revert-selected"].enabled, true);
+    assert.equal(toolbar.byId["delete-row"].disabledReason, "NO_STABLE_SELECTION");
+});
+
+test("toolbar disables Revert Selected when the current selection has no pending changes", () => {
+    const toolbar = deriveDataToolbar({
+        hasObject: true,
+        pageState: "ready",
+        editable: true,
+        hasStableSelection: true,
+        hasRevertTarget: false,
+        pendingCount: 2,
+        operationKind: "idle",
+        importSupported: true,
+    });
+
+    assert.equal(toolbar.byId["revert-selected"].disabledReason, "NO_PENDING_CHANGES");
+    assert.equal(toolbar.byId.apply.enabled, true);
+});
+

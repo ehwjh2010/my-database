@@ -1,4 +1,28 @@
-export function InfoTable({ headers, rows }) {
+import { splitHighlighted } from "./structure-search.js";
+
+export function MarkedText({ text, query, activeIndex, nextIndex }) {
+    if (!query)
+        return text == null ? "" : String(text);
+    return splitHighlighted(text, query).map((piece, index) => {
+        if (!piece.match)
+            return piece.text;
+        const matchIndex = nextIndex();
+        return (
+            <mark
+                key={`${matchIndex}:${index}`}
+                data-structure-match={matchIndex}
+                className={matchIndex === activeIndex ? "structure-match is-current" : "structure-match"}
+            >
+                {piece.text}
+            </mark>
+        );
+    });
+}
+
+export function InfoTable({ headers, rows, query, activeIndex, nextIndex }) {
+    const mark = query
+        ? (text) => <MarkedText text={text} query={query} activeIndex={activeIndex} nextIndex={nextIndex} />
+        : null;
     return (
         <div className="grid-wrap grid-wrap-inline">
             <table className="grid-table grid-table-structure">
@@ -17,7 +41,7 @@ export function InfoTable({ headers, rows }) {
                                     const text = cell === null ? "" : String(cell);
                                     return (
                                         <td key={c} title={text.length > 60 ? text : undefined}>
-                                            {cell === null ? <span className="null-badge">—</span> : text}
+                                            {cell === null ? <span className="null-badge">—</span> : (mark ? mark(text) : text)}
                                         </td>
                                     );
                                 })}

@@ -1,9 +1,9 @@
-import { Decoration, EditorView, GutterMarker, RectangleMarker, gutter, keymap, layer, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection } from "@codemirror/view";
+import { Decoration, EditorView, GutterMarker, RectangleMarker, gutter, keymap, layer, lineNumbers, drawSelection } from "@codemirror/view";
 import { Annotation, Compartment, EditorSelection, EditorState, RangeSet, StateEffect, StateField } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { sql, PostgreSQL, MySQL, MariaSQL, SQLite } from "@codemirror/lang-sql";
 import { acceptCompletion, autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap, insertBracket, pickedCompletion } from "@codemirror/autocomplete";
-import { syntaxTree } from "@codemirror/language";
+import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { isSqlBracketKey } from "../lib/sql-brackets.js";
 import { muxyTheme } from "./editor-theme.js";
@@ -171,13 +171,21 @@ function statementRange(node) {
 function statementContainsCaret(state, range, pos) {
     if (pos >= range.from && pos <= range.to)
         return true;
-    const line = state.doc.lineAt(Math.max(range.to - 1, range.from));
-    return pos > range.to && pos <= line.to;
+    if (pos > range.to) {
+        const line = state.doc.lineAt(Math.max(range.to - 1, range.from));
+        if (pos <= line.to)
+            return true;
+        const nextLine = state.doc.line(line.number + 1);
+        if (nextLine && nextLine.from === line.to + 1 && pos === line.to + 1)
+            return true;
+    }
+    return false;
 }
 
 export function sqlStatementAt(state, pos) {
     if (pos == null || !state.doc.length)
         return null;
+    ensureSyntaxTree(state, state.doc.length);
     const tree = syntaxTree(state);
     const candidates = [pos, pos - 1, pos + 1].filter((offset, index, values) => offset >= 0 && offset <= state.doc.length && values.indexOf(offset) === index);
     for (const offset of candidates) {
@@ -237,10 +245,8 @@ export function createSqlEditor(parent, { engine, doc = "", schema = {}, executi
                 executionDecorations,
                 executionGutter,
                 lineNumbers(),
-                highlightActiveLineGutter(),
                 history(),
                 drawSelection(),
-                highlightActiveLine(),
                 highlightSelectionMatches(),
                 closeBrackets(),
                 sqlBracketKeydown,

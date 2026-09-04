@@ -235,12 +235,13 @@ export const postgres = {
         }
     },
 
-    async importDatabase(ctx, dumpPath, opts = {}) {
-        await exec(ctx, ["-f", dumpPath], { timeoutMs: opts.timeoutMs || 600000 });
+    async clearDatabase(ctx, opts = {}) {
+        const schema = quoteIdent("postgres", ctx.schema || "public");
+        await exec(ctx, ["-q", "-c", `DROP SCHEMA ${schema} CASCADE; CREATE SCHEMA ${schema};`], { timeoutMs: opts.timeoutMs || 600000 });
     },
 
-    async runBatch(ctx, sql, opts = {}) {
-        await exec(ctx, ["-q", "-c", sql], opts);
+    async importDatabase(ctx, dumpPath, opts = {}) {
+        await exec(ctx, ["-f", dumpPath], { timeoutMs: opts.timeoutMs || 600000 });
     },
 
     async runBatch(ctx, sql, opts = {}) {

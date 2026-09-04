@@ -82,7 +82,7 @@ const ENGINE_PHRASES = {
     ],
 };
 
-const phrase = (label) => ({ label, type: "keyword", boost: 50 });
+const phrase = (label) => ({ label, type: "keyword", boost: -0.5 });
 
 export function sqlPhraseCompletionSource(engine) {
     const options = [...COMMON_PHRASES, ...ENGINE_PHRASES[engine]].map(phrase);

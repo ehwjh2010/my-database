@@ -1,6 +1,4 @@
 import { useState } from "react";
-import { EmptyState } from "../ui/empty-state.jsx";
-import { Icon } from "../ui/icon.jsx";
 import { Modal } from "../ui/modal.jsx";
 
 function SqlFileNameModal({ title, submitLabel, testId, initialName = "", error, onClose, onSubmit }) {
@@ -55,66 +53,4 @@ export function NewSqlFileModal({ error, onClose, onSubmit }) {
 
 export function RenameSqlFileModal({ name, error, onClose, onSubmit }) {
     return <SqlFileNameModal title="Rename SQL File" submitLabel="Rename" testId="rename-sql-file-name" initialName={name} error={error} onClose={onClose} onSubmit={onSubmit} />;
-}
-
-export function ConsoleView({ state, hasDatabase, hasQueryTab, onNewQuery, onOpenFile, onRetry }) {
-    const phase = state?.phase || "missing";
-    const loading = phase === "loading";
-    const ready = phase === "ready";
-    const disabled = !hasDatabase || !hasQueryTab || loading || phase === "error";
-
-    return (
-        <div className="flex min-h-0 flex-1 flex-col">
-            <div className="toolbar border-b" style={{ borderColor: "var(--muxy-border)" }}>
-                <button className="btn btn-compact btn-primary" disabled={disabled}>
-                    <Icon name="play" />
-                    Run
-                </button>
-                <button className="btn btn-compact" disabled={disabled}>Explain</button>
-                <div className="flex-1" />
-                <button className="icon-btn" title="Export results as CSV" disabled={disabled}>
-                    <Icon name="download" />
-                </button>
-                <button className="btn btn-compact" disabled={!hasDatabase || !ready} onClick={onNewQuery}>
-                    <Icon name="plus" />
-                    New Query
-                </button>
-            </div>
-            <div className="flex min-h-0 flex-1 flex-col">
-                {!hasDatabase ? (
-                    <EmptyState icon="database" title="Database required" description="Select a database first to open Console." />
-                ) : loading ? (
-                    <EmptyState icon="refresh" title="Loading Console" description="Preparing the SQL file space…" />
-                ) : phase === "error" ? (
-                    <EmptyState icon="warning" title="Could not load SQL files" description="The Console file list could not be loaded.">
-                        <div className="error-box max-w-[var(--sheet-lg)] text-left">{state.error?.message || String(state.error)}</div>
-                        <button className="btn" onClick={onRetry}>
-                            <Icon name="refresh" />
-                            Retry
-                        </button>
-                    </EmptyState>
-                ) : (
-                    <EmptyState icon="code" title="Database Console" description="Open an existing SQL file or create a new one.">
-                        <div className="flex max-h-64 w-72 flex-col overflow-y-auto rounded-[var(--radius-control)] border border-border bg-surface p-[var(--s2)] text-left">
-                            {state.files.map((file) => (
-                                <button
-                                    key={file.name}
-                                    className="flex h-8 shrink-0 items-center gap-[var(--s3)] rounded-[var(--radius-sm)] px-[var(--s4)] hover:bg-accent"
-                                    title={`Open ${file.name}`}
-                                    onClick={() => onOpenFile(file)}
-                                >
-                                    <Icon name="file" />
-                                    <span className="min-w-0 flex-1 truncate font-mono">{file.name}</span>
-                                </button>
-                            ))}
-                        </div>
-                        <button className="btn" onClick={onNewQuery}>
-                            <Icon name="plus" />
-                            New SQL File
-                        </button>
-                    </EmptyState>
-                )}
-            </div>
-        </div>
-    );
 }

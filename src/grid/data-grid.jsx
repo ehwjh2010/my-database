@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { cellDisplay, ColumnTooltip } from "./grid.jsx";
+import { gutterRowNumber } from "./page-size.js";
+import { frozenTableStyle, useFrozenColumnWidths } from "./sticky-header.js";
 import { CellEditor } from "./cell-editor.jsx";
 import { ContextMenu } from "../ui/context-menu.jsx";
 import { InsertRows } from "./insert-rows.jsx";
 import { getEdit, isDeleted, setInsertCell } from "./pending-changes.js";
 import { Icon } from "../ui/icon.jsx";
-import { nextSelectedCell } from "./cell-navigation.js";
+import { cellClickIntent, isCellInSelection, isRowInSelection, nextGridPoint, pointFromCell } from "./grid-selection.js";
 
 function normalizeInput(value) {
     if (value === null)
@@ -15,12 +17,40 @@ function normalizeInput(value) {
     return String(value);
 }
 
-export function DataGrid({ page, changes, editable, mutationLocked, onChange, editing, setEditing, onContextItems, onCopyColumnName, onViewCell, selectedCell, onSelectCell, scrollTarget, sortDirections, onSort }) {
+function Cols({ widths }) {
+    if (!widths?.length)
+        return null;
+    return (
+        <colgroup>
+            {widths.map((width, index) => (
+                <col key={index} style={{ width, minWidth: width }} />
+            ))}
+        </colgroup>
+    );
+}
+
+export function DataGrid({ page, pageIndex = 0, pageSize = 1, changes, editable, mutationLocked, onChange, editing, setEditing, onContextItems, onCopyColumnName, onViewCell, selectedCell, selection, onSelectCell, onClearSelection, onRevertSelected, canRevert, scrollTarget, sortDirections, onSort }) {
     const { displayColumns, displayRows, keyValuesFor } = page;
     const [menu, setMenu] = useState(null);
     const gridRef = useRef(null);
+    const headTableRef = useRef(null);
+    const bodyTableRef = useRef(null);
     const headerRefs = useRef(new Map());
     const cellRefs = useRef(new Map());
+    const collapseTimerRef = useRef(null);
+    const insertIds = (changes.model.inserts || []).map((insert) => insert.id);
+    const selectionCtx = { columnCount: displayColumns.length, rowCount: displayRows.length, insertIds };
+    const colWidths = useFrozenColumnWidths(headTableRef, bodyTableRef, [displayColumns, displayRows, editable, editing]);
+    const tableStyle = frozenTableStyle(colWidths);
+
+    const clearCollapseTimer = () => {
+        if (collapseTimerRef.current) {
+            clearTimeout(collapseTimerRef.current);
+            collapseTimerRef.current = null;
+        }
+    };
+
+    useEffect(() => () => clearCollapseTimer(), []);
 
     useEffect(() => {
         if (!scrollTarget)
@@ -50,10 +80,14 @@ export function DataGrid({ page, changes, editable, mutationLocked, onChange, ed
         setEditing(null);
     };
 
+    const revertMenuItem = canRevert
+        ? [{ label: "Revert Selected", onClick: () => onRevertSelected() }]
+        : [];
+
     const rowContextItems = (r, c) => {
         const column = displayColumns[c];
         const value = displayRows[r][c];
-        const items = onContextItems(value, r, column);
+        const items = [...revertMenuItem, ...onContextItems(value, r, column)];
         if (editable && !mutationLocked) {
             items.push({ separator: true });
             items.push({
@@ -68,96 +102,217 @@ export function DataGrid({ page, changes, editable, mutationLocked, onChange, ed
         return items;
     };
 
-    const selectCell = (row, column) => {
+    const insertContextItems = () => revertMenuItem;
+
+    const focusGrid = () => {
         gridRef.current.focus({ preventScroll: true });
-        onSelectCell({ row, column });
     };
 
-    const selectRow = (row) => {
-        if (!displayColumns.length)
+    const applyCellPointer = (cell, event) => {
+        focusGrid();
+        const point = pointFromCell(cell);
+        const intent = cellClickIntent(event, isCellInSelection(selection, point, selectionCtx));
+        if (intent === "ignore")
             return;
-        selectCell(row, Math.max(0, Math.min(selectedCell?.column ?? 0, displayColumns.length - 1)));
+        clearCollapseTimer();
+        if (intent === "retain") {
+            onSelectCell(cell, { focusOnly: true });
+            collapseTimerRef.current = setTimeout(() => {
+                collapseTimerRef.current = null;
+                onSelectCell(cell, {});
+            }, 400);
+            return;
+        }
+        if (intent === "extend")
+            onSelectCell(cell, { extend: true });
+        else if (intent === "additive")
+            onSelectCell(cell, { additive: true });
+        else
+            onSelectCell(cell, {});
     };
 
-    const selectInsert = (insertId, column) => {
+    const selectCell = (row, column, event) => {
+        applyCellPointer({ row, column }, event);
+    };
+
+    const selectRow = (row, event) => {
         if (!displayColumns.length)
             return;
-        gridRef.current.focus({ preventScroll: true });
-        onSelectCell({ kind: "insert", insertId, column: Math.max(0, Math.min(column, displayColumns.length - 1)) });
+        clearCollapseTimer();
+        focusGrid();
+        const column = Math.max(0, Math.min(selectedCell?.column ?? 0, displayColumns.length - 1));
+        onSelectCell({ row, column }, { row: true, extend: event?.shiftKey, additive: event?.metaKey || event?.ctrlKey });
+    };
+
+    const selectInsert = (insertId, column, event) => {
+        if (!displayColumns.length)
+            return;
+        applyCellPointer(
+            { kind: "insert", insertId, column: Math.max(0, Math.min(column, displayColumns.length - 1)) },
+            event,
+        );
+    };
+
+    const selectInsertRow = (insertId, event) => {
+        if (!displayColumns.length)
+            return;
+        clearCollapseTimer();
+        focusGrid();
+        const column = Math.max(0, Math.min(selectedCell?.column ?? 0, displayColumns.length - 1));
+        onSelectCell(
+            { kind: "insert", insertId, column },
+            { row: true, extend: event?.shiftKey, additive: event?.metaKey || event?.ctrlKey },
+        );
+    };
+
+    const startEditing = (next) => {
+        clearCollapseTimer();
+        setEditing(next);
+    };
+
+    const beginEditFromFocus = () => {
+        if (!editable || mutationLocked || !selectedCell || !displayColumns.length)
+            return false;
+        const column = displayColumns[Math.max(0, Math.min(selectedCell.column ?? 0, displayColumns.length - 1))];
+        if (!column)
+            return false;
+        if (selectedCell.kind === "insert")
+            startEditing({ kind: "insert", insertId: selectedCell.insertId, column: column.name });
+        else
+            startEditing({ kind: "row", row: selectedCell.row, column: column.name });
+        return true;
+    };
+
+    const openCellMenu = (event, r, c) => {
+        event.preventDefault();
+        window.getSelection()?.removeAllRanges();
+        clearCollapseTimer();
+        const point = { type: "row", row: r, column: c };
+        if (!isCellInSelection(selection, point, selectionCtx))
+            selectCell(r, c);
+        setMenu({ x: event.clientX, y: event.clientY, items: rowContextItems(r, c) });
     };
 
     const onGridKeyDown = (event) => {
-        if (event.target !== event.currentTarget || editing || !selectedCell || selectedCell.kind === "insert")
+        if (event.ctrlKey && event.altKey && (event.key === "z" || event.key === "Z") && !event.metaKey) {
+            event.preventDefault();
+            if (editing)
+                startEditing(null);
+            onRevertSelected?.();
             return;
-        const next = nextSelectedCell(selectedCell, event.key, displayRows.length, displayColumns.length);
+        }
+        if (event.key === "Escape") {
+            if (editing)
+                return;
+            event.preventDefault();
+            clearCollapseTimer();
+            onClearSelection?.();
+            return;
+        }
+        if (editing)
+            return;
+        if (event.key === "Enter" && !event.isComposing) {
+            if (beginEditFromFocus())
+                event.preventDefault();
+            return;
+        }
+        const point = pointFromCell(selectedCell);
+        const next = nextGridPoint(point, event.key, displayRows.length, displayColumns.length, insertIds);
         if (!next)
             return;
         event.preventDefault();
-        onSelectCell(next);
-        cellRefs.current.get(`${next.row}:${next.column}`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+        clearCollapseTimer();
+        const cell = next.type === "insert"
+            ? { kind: "insert", insertId: next.insertId, column: next.column }
+            : { row: next.row, column: next.column };
+        onSelectCell(cell, { extend: event.shiftKey });
+        const key = next.type === "insert" ? `insert:${next.insertId}:${next.column}` : `${next.row}:${next.column}`;
+        cellRefs.current.get(key)?.scrollIntoView({ block: "nearest", inline: "nearest" });
     };
 
     return (
-        <div ref={gridRef} className="grid-wrap outline-none" tabIndex={0} onKeyDown={onGridKeyDown}>
-            <table className="grid-table data-grid-table">
-                <thead>
-                    <tr>
-                        {editable ? <th className="gutter" /> : null}
-                        {displayColumns.map((col, c) => {
-                            const direction = sortDirections.get(col.name);
-                            return (
-                                <th
-                                    key={col.name}
-                                    ref={(node) => node ? headerRefs.current.set(c, node) : headerRefs.current.delete(c)}
-                                    aria-sort={direction === "ASC" ? "ascending" : direction === "DESC" ? "descending" : "none"}
-                                    onContextMenu={(event) => {
-                                        event.preventDefault();
-                                        setMenu({ x: event.clientX, y: event.clientY, items: [{ label: "Copy Column Name", onClick: () => onCopyColumnName(col.name) }] });
-                                    }}
-                                >
-                                    <button type="button" className="sortable-header" onClick={() => onSort(col.name)}>
-                                        <span>{col.name}</span>
-                                        {direction ? (
-                                            <span className={`sort-arrow ${direction === "ASC" ? "sort-arrow-asc" : ""}`}>
-                                                <Icon name="chevronDown" size={12} />
-                                            </span>
-                                        ) : null}
-                                        <ColumnTooltip column={col} />
-                                    </button>
-                                </th>
-                            );
-                        })}
-                    </tr>
-                </thead>
+        <div
+            ref={gridRef}
+            className="grid-wrap outline-none"
+            tabIndex={0}
+            onKeyDown={onGridKeyDown}
+            onMouseDown={(event) => {
+                if (event.button === 2)
+                    event.preventDefault();
+            }}
+            onClick={(event) => {
+                if (event.target === event.currentTarget) {
+                    clearCollapseTimer();
+                    onClearSelection?.();
+                }
+            }}
+        >
+            <div className="grid-head-pin">
+                <table ref={headTableRef} className="grid-table data-grid-table" style={tableStyle}>
+                    <Cols widths={colWidths} />
+                    <thead>
+                        <tr>
+                            {editable ? <th className="gutter" /> : null}
+                            {displayColumns.map((col, c) => {
+                                const direction = sortDirections.get(col.name);
+                                return (
+                                    <th
+                                        key={col.name}
+                                        ref={(node) => node ? headerRefs.current.set(c, node) : headerRefs.current.delete(c)}
+                                        aria-sort={direction === "ASC" ? "ascending" : direction === "DESC" ? "descending" : "none"}
+                                        onContextMenu={(event) => {
+                                            event.preventDefault();
+                                            setMenu({ x: event.clientX, y: event.clientY, items: [{ label: "Copy Column Name", onClick: () => onCopyColumnName(col.name) }] });
+                                        }}
+                                    >
+                                        <button type="button" className="sortable-header" onClick={() => onSort(col.name)}>
+                                            <span>{col.name}</span>
+                                            {direction ? (
+                                                <span className={`sort-arrow ${direction === "ASC" ? "sort-arrow-asc" : ""}`}>
+                                                    <Icon name="chevronDown" size={12} />
+                                                </span>
+                                            ) : null}
+                                            <ColumnTooltip column={col} />
+                                        </button>
+                                    </th>
+                                );
+                            })}
+                        </tr>
+                    </thead>
+                </table>
+            </div>
+            <table ref={bodyTableRef} className="grid-table data-grid-table" style={tableStyle}>
+                <Cols widths={colWidths} />
                 <tbody>
                     {displayRows.map((row, r) => {
                         const deleted = editable && isDeleted(changes.model, keyValuesFor(r));
-                        const rowSelected = selectedCell?.row === r;
+                        const rowKey = { type: "row", row: r };
+                        const rowSelected = isRowInSelection(selection, rowKey, selectionCtx);
                         return (
                             <tr key={r} className={[deleted ? "row-deleted" : "", rowSelected ? "row-selected" : ""].filter(Boolean).join(" ") || undefined}>
                                 {editable ? (
-                                    <td className="gutter" onClick={() => selectRow(r)}>
-                                        {r + 1}
+                                    <td className="gutter" onClick={(event) => selectRow(r, event)}>
+                                        {gutterRowNumber(pageIndex, pageSize, r)}
                                     </td>
                                 ) : null}
                                 {row.map((value, c) => {
                                     const column = displayColumns[c];
                                     const edit = editable ? getEdit(changes.model, keyValuesFor(r), column.name) : { edited: false };
                                     const isEditing = editing && editing.kind === "row" && editing.row === r && editing.column === column.name;
-                                    const selected = selectedCell?.row === r && selectedCell.column === c;
+                                    const selected = isCellInSelection(selection, { type: "row", row: r, column: c }, selectionCtx);
                                     if (isEditing)
                                         return (
                                             <td
                                                 key={c}
                                                 ref={(node) => node ? cellRefs.current.set(`${r}:${c}`, node) : cellRefs.current.delete(`${r}:${c}`)}
                                                 className={`editing${selected ? " cell-selected" : ""}`}
-                                                onClick={() => onSelectCell({ row: r, column: c })}
+                                                onClick={(event) => selectCell(r, c, event)}
                                             >
                                                 <CellEditor
                                                     type={column.type}
                                                     value={edit.edited ? edit.value : value}
                                                     onCommit={(next) => commitRowEdit(r, column, value, next)}
-                                                    onCancel={() => setEditing(null)}
+                                                    onCancel={() => startEditing(null)}
                                                 />
                                             </td>
                                         );
@@ -168,9 +323,14 @@ export function DataGrid({ page, changes, editable, mutationLocked, onChange, ed
                                             ref={(node) => node ? cellRefs.current.set(`${r}:${c}`, node) : cellRefs.current.delete(`${r}:${c}`)}
                                             className={[edit.edited ? "cell-edited" : "", selected ? "cell-selected" : ""].filter(Boolean).join(" ") || undefined}
                                             title={info.title}
-                                            onClick={() => selectCell(r, c)}
-                                            onDoubleClick={editable && !mutationLocked ? () => setEditing({ kind: "row", row: r, column: column.name }) : () => onViewCell(value)}
-                                            onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, items: rowContextItems(r, c) }); }}
+                                            onClick={(event) => selectCell(r, c, event)}
+                                            onDoubleClick={() => {
+                                                if (editable && !mutationLocked)
+                                                    startEditing({ kind: "row", row: r, column: column.name });
+                                                else
+                                                    onViewCell(value);
+                                            }}
+                                            onContextMenu={(event) => openCellMenu(event, r, c)}
                                         >
                                             {info.null ? <span className="null-badge">NULL</span> : info.text}
                                         </td>
@@ -185,10 +345,22 @@ export function DataGrid({ page, changes, editable, mutationLocked, onChange, ed
                             columns={displayColumns}
                             editing={editing}
                             mutationLocked={mutationLocked}
-                            selectedCell={selectedCell}
+                            selection={selection}
+                            selectionCtx={selectionCtx}
                             onSelectInsert={selectInsert}
-                            onEdit={setEditing}
+                            onSelectInsertRow={selectInsertRow}
+                            onOpenMenu={(event, insertId, c) => {
+                                const items = insertContextItems();
+                                if (!items.length)
+                                    return;
+                                event.preventDefault();
+                                if (!isCellInSelection(selection, { type: "insert", insertId, column: c }, selectionCtx))
+                                    selectInsert(insertId, c);
+                                setMenu({ x: event.clientX, y: event.clientY, items });
+                            }}
+                            onEdit={startEditing}
                             onCommit={commitInsertEdit}
+                            cellRefs={cellRefs}
                         />
                     ) : null}
                 </tbody>

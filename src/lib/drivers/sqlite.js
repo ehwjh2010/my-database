@@ -140,6 +140,20 @@ export const sqlite = {
         }
     },
 
+    async clearDatabase(ctx, opts = {}) {
+        await run([BIN, "-batch", databaseUri(ctx.conn.sqlite.path), "PRAGMA foreign_keys = OFF; DROP SCHEMA main CASCADE;"], opts);
+    },
+
+    async clearDatabase(ctx, opts = {}) {
+        const tables = await this.listTables(ctx);
+        if (!tables.length)
+            return;
+        const drops = tables
+            .map((t) => `DROP ${t.kind === "view" ? "VIEW" : "TABLE"} IF EXISTS ${quoteIdent("sqlite", t.name)}`)
+            .join("; ");
+        await run([BIN, "-batch", databaseUri(ctx.conn.sqlite.path), `PRAGMA foreign_keys = OFF; ${drops}; PRAGMA foreign_keys = ON;`], opts);
+    },
+
     async importDatabase(ctx, dumpPath, opts = {}) {
         await runWithStdinFile(["sqlite3", "-bail", "-batch", databaseUri(ctx.conn.sqlite.path)], dumpPath, { timeoutMs: opts.timeoutMs || 600000 });
     },

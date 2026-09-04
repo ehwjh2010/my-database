@@ -49,3 +49,15 @@ test("sequential drivers attach the source range for the failed statement", asyn
         return true;
     });
 });
+
+test("mysql rejects truncated XML instead of returning an empty page", async () => {
+    setSessionPassword("mysql-error-range", "secret");
+    muxy.exec = async (argv) => {
+        if (argv[0] === "/usr/bin/which")
+            return { exitCode: 0, stdout: "/usr/bin/mysql\n", stderr: "" };
+        if (argv[0] === "perl")
+            return { exitCode: 0, stdout: "", stderr: "" };
+        return { exitCode: 0, stdout: "<resultset><row><field name=\"id\">1</field></row><row><field name=\"id\">", stderr: "" };
+    };
+    await assert.rejects(mysql.runQuery(mysqlCtx, "SELECT * FROM work_order LIMIT 500"), /truncated/);
+});

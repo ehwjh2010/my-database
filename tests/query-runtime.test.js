@@ -241,3 +241,24 @@ test("SQL tab query results stay isolated and expose export context", async () =
     assert.deepEqual(state.results, { results: [result] });
     assert.deepEqual(state.exportContext, { objectRef: undefined, result });
 });
+
+test("coordinator query commits notify so the editor can leave the running marker", () => {
+    const session = stubSession();
+    let revisions = 0;
+    const coordinator = createWorkspaceCoordinator(session, { notify: () => { revisions += 1; } });
+    const { workspaceId } = coordinator.openOrActivate({ database: "app", schema: "main", table: "orders" });
+    const request = coordinator.initiateQueryExecute(workspaceId, "SELECT 1", "execute", { line: 4, from: 40 });
+    const afterStart = revisions;
+
+    assert.equal(coordinator.commitQueryResult(request, [{ columns: [], rows: [] }]), true);
+    assert.equal(revisions, afterStart + 1);
+    const state = session.queryState.get(session.registry.byId[workspaceId].key);
+    assert.equal(state.queryRunning, false);
+    assert.deepEqual(state.executionMarker, { line: 4, status: "success" });
+
+    const failure = coordinator.initiateQueryExecute(workspaceId, "SELECT broken", "execute", { line: 4, from: 40 });
+    const afterFailureStart = revisions;
+    assert.equal(coordinator.commitQueryError(failure, "syntax error"), true);
+    assert.equal(revisions, afterFailureStart + 1);
+    assert.deepEqual(state.executionMarker, { line: 4, status: "error" });
+});

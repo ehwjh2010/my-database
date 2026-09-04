@@ -26,9 +26,7 @@ function reasonFor(id, input, mutationLocked, anyOperation) {
     if (id === "delete-row" && !input.hasStableSelection)
         return "NO_STABLE_SELECTION";
     if (id === "revert-selected") {
-        if (!input.hasRevertSelection)
-            return "NO_STABLE_SELECTION";
-        if (!input.hasSelectedPending)
+        if (!input.hasRevertTarget)
             return "NO_PENDING_CHANGES";
     }
     if ((id === "review-dml" || id === "apply") && input.pendingCount <= 0)

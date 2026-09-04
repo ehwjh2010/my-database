@@ -2,6 +2,7 @@ import { clearChanges } from "../grid/pending-changes.js";
 import { dataOperationFor, settleDataOperation, startDataOperation } from "./data-operations.js";
 import { createSqlFile, ensureConsoleFile, getSqlNamespace, listSqlFiles, readSqlFile, renameSqlFile, saveSqlFile, trashSqlFile, validateFileName } from "../lib/sql-files.js";
 import { clearDataRuntime, clearDataRuntimes, dataRuntimeFor, nextDataRequest, refreshDataRuntime } from "./data-runtime.js";
+import { commitQueryError as applyQueryError, commitQueryResult as applyQueryResult } from "./query-runtime.js";
 import { currentDatabase, hasDatabase } from "./state.js";
 import { initialWorkspaceState, objectCacheKey, objectWorkspaceKey, pendingChangeCountFor, sameObjectRef, workspaceReducer } from "./workspace-state.js";
 
@@ -32,7 +33,8 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
     session.consoleToken = session.consoleToken || 0;
     session.consoleEpoch = session.consoleEpoch || 0;
     session.consoleState = session.consoleState || { phase: "missing", files: [], error: null };
-    session.surface = session.surface || "console";
+    session.tabOrder = session.tabOrder || [];
+    session.surface = session.surface || "object";
     let registryRevision = 0;
 
     const emit = () => {
@@ -61,6 +63,34 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         session.sqlFiles = [];
         session.sqlNamespace = null;
     };
+    const sameStripTab = (left, right) => left?.kind === right?.kind && left?.id === right?.id;
+    const appendStripTab = (item) => {
+        if (session.tabOrder.some((tab) => sameStripTab(tab, item)))
+            return;
+        session.tabOrder = [...session.tabOrder, item];
+    };
+    const removeStripTab = (item) => {
+        const index = session.tabOrder.findIndex((tab) => sameStripTab(tab, item));
+        if (index < 0)
+            return { next: null };
+        const order = session.tabOrder.filter((_, current) => current !== index);
+        const next = order[index - 1] || order[index] || null;
+        session.tabOrder = order;
+        return { next };
+    };
+    const activateStripTab = (item) => {
+        if (!item) {
+            session.surface = "object";
+            return;
+        }
+        if (item.kind === "sql") {
+            session.surface = "console";
+            session.sqlRegistry = { ...session.sqlRegistry, activeId: item.id };
+            return;
+        }
+        session.surface = "object";
+        commit({ type: "ACTIVATE", id: item.id });
+    };
     const clearWindowRuntime = ({ clearSql = true } = {}) => {
         clearDataRuntimes(session);
         session.structureCache?.clear();
@@ -71,6 +101,10 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         if (clearSql) {
             clearSqlRuntime();
             session.consoleEpoch += 1;
+            session.tabOrder = [];
+        }
+        else {
+            session.tabOrder = session.tabOrder.filter((tab) => tab.kind === "sql");
         }
         session.columnFocus = null;
         commit({ type: "CLEAR_ALL" });
@@ -83,7 +117,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         session.columnsMap = {};
         session.catalogError = null;
         if (clearSql) {
-            session.surface = "console";
+            session.surface = "object";
             session.consoleState = { phase: "missing", files: [], error: null };
         }
         clearWindowRuntime({ clearSql });
@@ -121,9 +155,13 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
                 session.infoCache?.delete(objectKey);
             }
         }
+        const wasActive = session.surface === "object" && session.registry.activeId === entry.id;
+        const { next } = removeStripTab({ kind: "object", id: entry.id });
         commit({ type: "CLOSE", id: entry.id });
         adapters.notifyPending?.();
         adapters.notifyData?.();
+        if (wasActive)
+            activateStripTab(next);
         return { outcome: "closed", activeId: session.registry.activeId };
     };
     const sqlEntryById = (sqlTabId) => session.sqlRegistry.byId[sqlTabId] || null;
@@ -158,6 +196,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             byId: { ...session.sqlRegistry.byId, [id]: { id, key, generation, kind: "sql", name: file.name, title: file.name, path: file.path, reserved: Boolean(file.reserved), observedVersion, dirty: false, saveStatus: "clean", saveFailed: false, saveError: null, conflictStatus: "none", conflictVersion: null, externalConflict: false } },
         };
         session.surface = "console";
+        appendStripTab({ kind: "sql", id });
         emit();
         return { sqlTabId: id, created: true, activeId: id };
     };
@@ -292,8 +331,9 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             return sqlEntryById(session.sqlRegistry.activeId);
         },
 
-        enterConsole() {
-            session.surface = "console";
+        enterConsole({ activate = true } = {}) {
+            if (activate)
+                session.surface = "console";
             const token = ++session.consoleToken;
             if (!hasDatabase(session)) {
                 session.consoleState = { phase: "missing", files: [], error: null };
@@ -355,8 +395,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             const name = validateFileName(rawName, { allowReserved: true });
             const existingId = session.sqlRegistry.order.find((id) => session.sqlRegistry.byId[id]?.name === name);
             if (existingId !== undefined) {
-                session.surface = "console";
-                session.sqlRegistry = { ...session.sqlRegistry, activeId: existingId };
+                activateStripTab({ kind: "sql", id: existingId });
                 emit();
                 return { sqlTabId: existingId, activated: true, created: false, activeId: existingId };
             }
@@ -549,8 +588,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
         activateSql(sqlTabId) {
             if (!sqlEntryById(sqlTabId))
                 return { error: "QUERY_TAB_REQUIRED" };
-            session.sqlRegistry = { ...session.sqlRegistry, activeId: sqlTabId };
-            session.surface = "console";
+            activateStripTab({ kind: "sql", id: sqlTabId });
             emit();
             return { activeId: sqlTabId };
         },
@@ -569,18 +607,20 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             const entry = sqlEntryById(sqlTabId);
             if (!entry)
                 return { error: "QUERY_TAB_REQUIRED" };
-            const index = session.sqlRegistry.order.indexOf(sqlTabId);
+            const wasActive = session.surface === "console" && session.sqlRegistry.activeId === sqlTabId;
+            const { next } = removeStripTab({ kind: "sql", id: sqlTabId });
             const order = session.sqlRegistry.order.filter((id) => id !== sqlTabId);
-            const nextActive = session.sqlRegistry.activeId === sqlTabId ? order[Math.max(0, index - 1)] || order[0] || null : session.sqlRegistry.activeId;
             const { [sqlTabId]: _, ...byId } = session.sqlRegistry.byId;
             const owner = session.sqlOwners.get(entry.key);
             if (owner?.saveTimer)
                 clearTimeout(owner.saveTimer);
-            session.sqlRegistry = { order, activeId: nextActive, byId };
+            session.sqlRegistry = { order, activeId: session.sqlRegistry.activeId === sqlTabId ? null : session.sqlRegistry.activeId, byId };
             session.sqlState.delete(entry.key);
             session.sqlOwners.delete(entry.key);
+            if (wasActive)
+                activateStripTab(next);
             emit();
-            return { activeId: nextActive };
+            return { activeId: session.sqlRegistry.activeId };
         },
 
         loadTableInfo(objectRef, operationCtx = captureOperationCtx()) {
@@ -634,6 +674,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             }
             session.surface = "object";
             commit({ type: "OPEN", id: workspaceId, key, generation, ref: objectRef, view });
+            appendStripTab({ kind: "object", id: workspaceId });
             return { workspaceId, created: true, activeId: session.registry.activeId };
         },
 
@@ -829,7 +870,7 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
                 && (session.consoleState.phase !== "missing" || session.sqlNamespace || adapters.sqlFiles)
                 && typeof consoleApi.getNamespace === "function"
                 && typeof consoleApi.listSqlFiles === "function";
-            const consoleLoad = reloadConsole ? coordinator.enterConsole() : null;
+            const consoleLoad = reloadConsole ? coordinator.enterConsole({ activate: false }) : null;
             const catalog = await coordinator.initiateCatalogLoad();
             const console = consoleLoad ? await consoleLoad : null;
             return { outcome: "committed", scopeEpoch: session.scopeGeneration, catalog, ...(console ? { console, files: session.sqlFiles } : {}) };
@@ -927,6 +968,20 @@ export function createWorkspaceCoordinator(session, adapters = {}) {
             state.executionMarker = executionRange ? { line: executionRange.line, status: "running" } : null;
             emit();
             return { operationCtx: captureOperationCtx(), objectRef: entry.ref, ownership: ownershipFor(entry), requestToken: owner.queryRequest, queryToken: owner.queryRequest, sql, mode, executionRange, executionMarker: state.executionMarker };
+        },
+
+        commitQueryResult(request, data) {
+            const ok = applyQueryResult(session, request, data);
+            if (ok)
+                emit();
+            return ok;
+        },
+
+        commitQueryError(request, message, diagnostic) {
+            const ok = applyQueryError(session, request, message, diagnostic);
+            if (ok)
+                emit();
+            return ok;
         },
 
         initiateStructureRead(workspaceId) {

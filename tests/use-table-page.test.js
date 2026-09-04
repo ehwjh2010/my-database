@@ -64,6 +64,30 @@ test("loadTablePage uses the captured driver context for metadata and rows", asy
     assert.equal(calls[1].sql, 'SELECT * FROM "orders" ORDER BY "id" DESC LIMIT 2 OFFSET 0');
 });
 
+test("loadTablePage uses a grid pageSize without changing the session default", async () => {
+    const calls = [];
+    const session = sessionWithDriver(calls);
+    const key = "app.main.orders";
+    const runtime = dataRuntimeFor(session, key, tableRef, undefined, 1, 1);
+    const request = { ...nextDataRequest(runtime, session), dataRevision: 0 };
+    const target = {
+        tableRef,
+        gridState: { ...gridState, pageSize: 50 },
+        workspaceKey: key,
+        dataRevision: 0,
+        workspaceId: 1,
+        workspaceGeneration: 1,
+        scopeEpoch: 4,
+        generation: runtime.generation,
+        driverContext: Object.freeze({ database: "app", schema: "main" }),
+    };
+
+    await loadTablePage(session, target, runtime, request);
+
+    assert.equal(session.pageSize, 2);
+    assert.equal(calls[1].sql, 'SELECT * FROM "orders" ORDER BY "id" DESC LIMIT 50 OFFSET 0');
+});
+
 test("cached page requires matching grid revision and current request identity", () => {
     const session = sessionWithDriver([]);
     const key = "app.main.orders";
@@ -75,6 +99,7 @@ test("cached page requires matching grid revision and current request identity",
     assert.deepEqual(cachedPageFor(runtime, { ...gridState }, 2, 1, 4, runtime.generation, runtime.token), runtime.cache);
     assert.deepEqual(cachedPageFor(runtime, { ...gridState, total: 10, querySplit: 70 }, 2, 1, 4, runtime.generation, runtime.token), runtime.cache);
     assert.equal(cachedPageFor(runtime, { ...gridState, page: 1 }, 2, 1, 4, runtime.generation, runtime.token), null);
+    assert.equal(cachedPageFor(runtime, { ...gridState, pageSize: 50 }, 2, 1, 4, runtime.generation, runtime.token), null);
     assert.equal(cachedPageFor(runtime, { ...gridState, rawOrderBy: "id ASC" }, 2, 1, 4, runtime.generation, runtime.token), null);
     assert.equal(cachedPageFor(runtime, { ...gridState }, 1, 1, 4, runtime.generation, runtime.token), null);
 

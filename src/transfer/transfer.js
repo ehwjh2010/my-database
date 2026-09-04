@@ -261,7 +261,7 @@ async function chooseDumpFile() {
 async function confirmRestore(path) {
     return muxy.dialog.confirm({
         title: "Import database",
-        message: `Import this SQL dump into the current database?\n\n${path}\n\nExisting objects may be replaced, or the import may fail if they already exist.`,
+        message: `Import this SQL dump into the current database?\n\n${path}\n\nAll existing tables and views in this database will be dropped first.`,
         buttons: ["Import", "Cancel"],
         cancel: "Cancel",
         style: "warning",
@@ -291,6 +291,8 @@ export async function restoreDatabase(session, { onProgress, pickFile = chooseDu
 }
 
 async function importDump(session, path, onProgress) {
+    emitProgress(onProgress, "restore", "running", "Clearing database…", 0, true);
+    await session.driver.clearDatabase(session.ctx, { timeoutMs: TRANSFER_TIMEOUT });
     emitProgress(onProgress, "restore", "running", "Importing database…", 0, true);
     await session.driver.importDatabase(session.ctx, path, { timeoutMs: TRANSFER_TIMEOUT });
 }

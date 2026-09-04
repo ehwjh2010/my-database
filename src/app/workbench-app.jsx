@@ -15,6 +15,7 @@ export function WorkbenchApp() {
 
     const sessionRef = useRef(null);
     const queryHooksRef = useRef(null);
+    const ddlSearchRef = useRef(null);
     const setViewRef = useRef(null);
     const newFileRef = useRef(null);
 
@@ -74,6 +75,10 @@ export function WorkbenchApp() {
                 return;
             if (session.surface === "console" && !session.coordinator?.getActiveSql())
                 return;
+            if (ddlSearchRef.current) {
+                ddlSearchRef.current.search();
+                return;
+            }
             if (queryHooksRef.current)
                 queryHooksRef.current.run();
             else
@@ -117,6 +122,7 @@ export function WorkbenchApp() {
             key={state.session.conn.id}
             session={state.session}
             queryHooksRef={queryHooksRef}
+            ddlSearchRef={ddlSearchRef}
             setViewRef={setViewRef}
             newFileRef={newFileRef}
         >

@@ -8,7 +8,7 @@ export function useSession() {
     return useContext(SessionContext);
 }
 
-export function SessionProvider({ session, queryHooksRef, setViewRef, newFileRef, children }) {
+export function SessionProvider({ session, queryHooksRef, setViewRef, newFileRef, ddlSearchRef, children }) {
     const coordinator = session.coordinator;
     const [registryRevision, bumpRegistryRevision] = useReducer((n) => n + 1, 0);
     const [tables, setTables] = useState(session.tables || []);
@@ -44,7 +44,7 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, newFileRef
     const activeMode = activeWorkspace?.view || null;
     const activeRef = activeWorkspace?.ref || null;
     const activeSqlId = session.sqlRegistry?.activeId || null;
-    const surface = session.surface || (activeWorkspace ? "object" : "console");
+    const surface = session.surface || "object";
     const dataOperation = dataOperationFor(session, activeId);
 
     const refreshSchema = useCallback(async () => {
@@ -53,7 +53,7 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, newFileRef
     }, [coordinator]);
 
     const openWorkspace = useCallback((next) => coordinator.openOrActivate(next), [coordinator]);
-    const enterConsole = useCallback(() => coordinator.enterConsole(), [coordinator]);
+    const enterConsole = useCallback((options) => coordinator.enterConsole(options), [coordinator]);
     const newQuery = useCallback(() => coordinator.newQuery(), [coordinator]);
     const createAndOpenFile = useCallback((name) => coordinator.createAndOpenFile(name), [coordinator]);
     const openSqlFile = useCallback((name) => coordinator.openSqlFile(name), [coordinator]);
@@ -73,12 +73,16 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, newFileRef
     }, [coordinator, activeId]);
     const changeScope = useCallback((scope) => coordinator.changeScope(scope), [coordinator]);
     const changeView = useCallback((next) => {
-        if (next === "console")
-            return coordinator.enterConsole();
+        if (next === "console") {
+            const sqlId = session.sqlRegistry?.activeId || session.sqlRegistry?.order?.[0];
+            if (sqlId)
+                return coordinator.activateSql(sqlId);
+            return coordinator.enterConsole({ activate: false });
+        }
         if (activeId)
             return coordinator.changeView(activeId, next);
         return { error: "OBJECT_WORKSPACE_REQUIRED" };
-    }, [coordinator, activeId]);
+    }, [coordinator, activeId, session]);
     const selectTable = useCallback((next) => openWorkspace(next), [openWorkspace]);
 
     useEffect(() => {
@@ -135,9 +139,10 @@ export function SessionProvider({ session, queryHooksRef, setViewRef, newFileRef
             changeScope,
             schemaEpoch,
             queryHooksRef,
+            ddlSearchRef,
             newFileRef,
         }),
-        [session, coordinator, order, activeId, byId, activeKey, activeMode, activeRef, activeSqlId, surface, registryRevision, pendingRevision, dataRevision, dataOperation, notifyPendingChanges, changeView, selectTable, openWorkspace, enterConsole, newQuery, createAndOpenFile, openSqlFile, activateSql, closeSql, loadTableInfo, focusTableColumn, columnFocus, consumeColumnFocus, activateWorkspace, closeWorkspace, refreshData, setWorkspaceMode, tables, columnsMap, catalogError, status, refreshSchema, changeScope, schemaEpoch, queryHooksRef, newFileRef],
+        [session, coordinator, order, activeId, byId, activeKey, activeMode, activeRef, activeSqlId, surface, registryRevision, pendingRevision, dataRevision, dataOperation, notifyPendingChanges, changeView, selectTable, openWorkspace, enterConsole, newQuery, createAndOpenFile, openSqlFile, activateSql, closeSql, loadTableInfo, focusTableColumn, columnFocus, consumeColumnFocus, activateWorkspace, closeWorkspace, refreshData, setWorkspaceMode, tables, columnsMap, catalogError, status, refreshSchema, changeScope, schemaEpoch, queryHooksRef, ddlSearchRef, newFileRef],
     );
 
     return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

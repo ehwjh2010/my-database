@@ -15,28 +15,36 @@ function metaLine(result) {
     return meta.join(" · ");
 }
 
-function ResultBlock({ result, label }) {
+function ResultBody({ result }) {
+    if (result.columns.length)
+        return (
+            <div className="result-grid flex min-h-0 flex-1 flex-col">
+                <Grid columns={result.columns} rows={result.rows} />
+            </div>
+        );
+    return (
+        <div className="px-[var(--s4)] py-[var(--s3)] text-muted-foreground">
+            {result.affectedRows != null
+                ? `OK — ${formatNumber(result.affectedRows)} row${result.affectedRows === 1 ? "" : "s"} affected`
+                : "OK"}
+        </div>
+    );
+}
+
+function ResultBlock({ result, label, onClose }) {
     return (
         <div className="result-block result-block-single flex min-h-0 flex-1 flex-col">
-            <div
-                className="flex items-center gap-[var(--s4)] border-b px-[var(--s4)] py-[var(--s2)] text-[var(--font-footnote)] text-muted-foreground"
-                style={{ borderColor: "var(--muxy-border)" }}
-            >
+            <div className="result-header">
                 {label}
                 <div className="flex-1" />
                 {metaLine(result)}
+                {onClose ? (
+                    <button type="button" className="icon-btn" aria-label="Close results" title="Close results" onClick={onClose}>
+                        <Icon name="x" size={12} />
+                    </button>
+                ) : null}
             </div>
-            {result.columns.length ? (
-                <div className="result-grid flex min-h-0 flex-1 flex-col">
-                    <Grid columns={result.columns} rows={result.rows} />
-                </div>
-            ) : (
-                <div className="px-[var(--s4)] py-[var(--s3)] text-muted-foreground">
-                    {result.affectedRows != null
-                        ? `OK — ${formatNumber(result.affectedRows)} row${result.affectedRows === 1 ? "" : "s"} affected`
-                        : "OK"}
-                </div>
-            )}
+            <ResultBody result={result} />
         </div>
     );
 }
@@ -88,47 +96,46 @@ export function Results({ results, error, onClose }) {
     };
 
     if (results.length === 1)
-        return (
-            <div className="flex h-full min-h-0 flex-col p-[var(--s4)]">
-                <ResultBlock result={active.result} label="Result" />
-            </div>
-        );
+        return <ResultBlock result={active.result} label="Result" onClose={onClose} />;
 
     return (
         <div className="flex h-full min-h-0 flex-col">
-            <div className="result-tabs" role="tablist" aria-label="Query results">
-                {tabs.map(({ index }) => {
-                    const activeTab = active.index === index;
-                    const tabId = `${baseId}-tab-${index}`;
-                    const panelId = `${baseId}-panel-${index}`;
-                    return (
-                        <div key={index} className={`result-tab${activeTab ? " active" : ""}`}>
-                            <button
-                                id={tabId}
-                                type="button"
-                                className="result-tab-select"
-                                role="tab"
-                                aria-selected={activeTab}
-                                aria-controls={panelId}
-                                onClick={() => setActiveIndex(index)}
-                            >
-                                <Icon name="table" size={14} />
-                                <span>{resultLabel(index)}</span>
-                            </button>
-                            <button type="button" className="result-tab-close" title={`Close ${resultLabel(index)}`} onClick={() => close(index)}>
-                                <Icon name="x" size={12} />
-                            </button>
-                        </div>
-                    );
-                })}
+            <div className="result-tabs">
+                <div className="result-tab-list" role="tablist" aria-label="Query results">
+                    {tabs.map(({ index }) => {
+                        const activeTab = active.index === index;
+                        const tabId = `${baseId}-tab-${index}`;
+                        const panelId = `${baseId}-panel-${index}`;
+                        return (
+                            <div key={index} className={`result-tab${activeTab ? " active" : ""}`}>
+                                <button
+                                    id={tabId}
+                                    type="button"
+                                    className="result-tab-select"
+                                    role="tab"
+                                    aria-selected={activeTab}
+                                    aria-controls={panelId}
+                                    onClick={() => setActiveIndex(index)}
+                                >
+                                    <Icon name="table" size={14} />
+                                    <span>{resultLabel(index)}</span>
+                                </button>
+                                <button type="button" className="result-tab-close" title={`Close ${resultLabel(index)}`} onClick={() => close(index)}>
+                                    <Icon name="x" size={12} />
+                                </button>
+                            </div>
+                        );
+                    })}
+                </div>
+                <div className="result-tab-meta">{metaLine(active.result)}</div>
             </div>
             <div
                 id={`${baseId}-panel-${active.index}`}
-                className="min-h-0 flex-1"
+                className="result-block result-block-single flex min-h-0 flex-1 flex-col"
                 role="tabpanel"
                 aria-labelledby={`${baseId}-tab-${active.index}`}
             >
-                <ResultBlock result={active.result} label={resultLabel(active.index)} />
+                <ResultBody result={active.result} />
             </div>
         </div>
     );

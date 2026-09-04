@@ -25,10 +25,8 @@ export function muxyTheme() {
             ".cm-sql-table-name, .cm-sql-table-name *": { color: "light-dark(#000000, #A9B7C6) !important" },
             ".cm-sql-column-name, .cm-sql-column-name *": { color: "light-dark(#660E7A, #9876AA) !important" },
             ".cm-sql-current-statement": { pointerEvents: "none", border: "1px solid var(--muxy-diff-add)", backgroundColor: "color-mix(in srgb, var(--muxy-diff-add) 4%, transparent)" },
-            ".cm-activeLine": { backgroundColor: "var(--editor-hover)" },
-            ".cm-activeLineGutter": { backgroundColor: "var(--editor-hover)" },
             "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection": {
-                backgroundColor: "color-mix(in srgb, var(--muxy-accent) 15%, var(--editor-background))",
+                backgroundColor: "light-dark(color-mix(in srgb, var(--muxy-accent) 55%, var(--editor-background)), color-mix(in srgb, var(--muxy-accent) 60%, var(--editor-background)))",
             },
             ".cm-selectionMatch": { backgroundColor: "var(--muxy-accent-soft)" },
             ".cm-tooltip": {
