@@ -83,14 +83,26 @@ test("SQLite database restore reads the dump with .read", async () => {
     assert.equal(calls[0].at(-1), "file:/tmp/Application%20Support/example.sqlite?mode=rw");
 });
 
-test("SQLite runBatch runs a statement batch without bail or json flags", async () => {
-    calls = [];
+test("SQLite table dump writes DROP IF EXISTS before CREATE then data", async () => {
+    const written = [];
     muxy.exec = async (argv) => {
-        calls.push(argv);
+        if (argv[0] === "sqlite3" && String(argv.at(-1)).startsWith(".dump")) {
+            return {
+                exitCode: 0,
+                stdout: "PRAGMA foreign_keys=OFF;\nCREATE TABLE orders (id INTEGER);\nINSERT INTO orders VALUES (1);\n",
+                stderr: "",
+            };
+        }
+        written.push(argv);
         return { exitCode: 0, stdout: "", stderr: "" };
     };
-    await sqlite.runBatch(ctx, "INSERT INTO t VALUES (1);\nINSERT INTO t VALUES (2);", { timeoutMs: 600000 });
-    assert.deepEqual(calls[0], ["sqlite3", "-batch", "/tmp/Application Support/example.sqlite", "INSERT INTO t VALUES (1);\nINSERT INTO t VALUES (2);"]);
+    await sqlite.dumpDatabase(ctx, "/tmp/exports/orders.sql", { table: "orders" });
+    const payload = written.find((argv) => argv[0] === "perl");
+    assert.ok(payload);
+    assert.equal(payload[3], "/tmp/exports/orders.sql");
+    assert.match(payload[4], /DROP TABLE IF EXISTS orders;/);
+    assert.match(payload[4], /CREATE TABLE orders/);
+    assert.match(payload[4], /INSERT INTO orders VALUES \(1\);/);
 });
 
 test("SQLite runBatch runs a statement batch without bail or json flags", async () => {

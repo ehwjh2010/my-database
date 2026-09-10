@@ -1,13 +1,10 @@
 import { toast } from "../ui/toast.js";
 import { qualifiedName } from "../lib/sql/quote.js";
+import { truncateSql } from "../lib/sql/truncate.js";
 import { isCurrentDataApply, objectCacheKey, sameObjectRef } from "../workbench/workspace-state.js";
 import { invalidateStructureSnapshot } from "../workbench/structure-runtime.js";
 
-export function truncateSql(engine, tableRef) {
-    return engine === "sqlite"
-        ? `DELETE FROM ${qualifiedName(engine, tableRef)}`
-        : `TRUNCATE TABLE ${qualifiedName(engine, tableRef)}`;
-}
+export { truncateSql };
 
 export function dropSql(engine, tableRef) {
     return `DROP ${tableRef.kind === "view" ? "VIEW" : "TABLE"} ${qualifiedName(engine, tableRef)}`;

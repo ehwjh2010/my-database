@@ -9,6 +9,7 @@ import { IndexDesignerModal } from "../structure/index-designer.jsx";
 import { getPref } from "../lib/storage.js";
 import { invalidateStructureSnapshot } from "./structure-runtime.js";
 import { toast } from "../ui/toast.js";
+import { copyToClipboard } from "../lib/clipboard.js";
 
 const DEFAULT_WIDTH = 250;
 const MIN_WIDTH = 180;
@@ -225,9 +226,12 @@ export function Sidebar({ onExportDatabase, onImportDatabase, dumpProgress }) {
     };
 
     const openMenu = (event, tableRef, table) => {
+        const copy = { label: "Copy table name", onClick: async () => { await copyToClipboard(tableRef.table); toast("Copied"); } };
         const items = table.kind === "view"
-            ? [{ label: "Drop", danger: true, onClick: () => dropObject(session, tableRef, confirmDestructive) }]
+            ? [copy, { separator: true }, { label: "Drop", danger: true, onClick: () => dropObject(session, tableRef, confirmDestructive) }]
             : [
+                copy,
+                { separator: true },
                 { label: "Index", onClick: () => openIndexDesigner(tableRef) },
                 { label: "Truncate", danger: true, onClick: () => truncateTable(session, tableRef, confirmDestructive) },
                 { separator: true },
@@ -251,7 +255,14 @@ export function Sidebar({ onExportDatabase, onImportDatabase, dumpProgress }) {
         <div ref={sidebar} className="sidebar flex w-[var(--sidebar-width)] flex-shrink-0 flex-col border-r" style={{ "--sidebar-width": `${width}px`, borderColor: "var(--muxy-border)" }}>
             <div className="search-bar-shell">
                 <div className="search-bar" style={{ borderColor: "var(--muxy-border)" }}>
-                    <input type="text" placeholder="Filter tables" className="search-bar-input" value={filter} onChange={(event) => setFilter(event.target.value)} />
+                    <div className="search-bar-field">
+                        <input type="text" placeholder="Filter tables" className="search-bar-input" value={filter} onChange={(event) => setFilter(event.target.value)} />
+                        {filter ? (
+                            <button type="button" className="icon-btn" title="Clear filter" aria-label="Clear filter" onClick={() => setFilter("")}>
+                                <Icon name="x" />
+                            </button>
+                        ) : null}
+                    </div>
                     {onImportDatabase ? (
                         <button
                             className="icon-btn"

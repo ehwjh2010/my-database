@@ -17,7 +17,7 @@ export function schemaForCompletion(session) {
     return schema;
 }
 
-export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHooksRef }) {
+export function QueryView({ session, workspaceId, sqlTabId, queryHooksRef }) {
     const editorRef = useRef(null);
     const editorHostRef = useRef(null);
     const resultsHeightRef = useRef(null);
@@ -79,11 +79,8 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
         async (execution, mode) => {
             const isExplain = mode === "explain";
             const snapshot = session.coordinator.initiateQueryExecute(tabId, execution.sql, mode, execution.range, isSqlTab);
-            if (snapshot.error) {
-                setStatus("Error");
+            if (snapshot.error)
                 return;
-            }
-            setStatus(isExplain ? "Explaining\u2026" : "Running\u2026");
             let data;
             try {
                 data = isExplain
@@ -93,20 +90,16 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
                 const diagnostic = isExplain ? null : queryErrorDiagnostic({ engine: session.conn.engine, sql: snapshot.sql, documentOffset: snapshot.executionRange.from, error });
                 if (!session.coordinator.commitQueryError(snapshot, error.message, diagnostic))
                     return;
-                if (isActive()) {
-                    setStatus("Error");
+                if (isActive())
                     setResultsOpen(true);
-                }
                 return;
             }
             if (!session.coordinator.commitQueryResult(snapshot, data))
                 return;
-            if (isActive()) {
-                setStatus("Ready");
+            if (isActive())
                 setResultsOpen(true);
-            }
         },
-        [session, setStatus, tabId],
+        [session, tabId],
     );
 
     const presentExecute = useCallback((mode) => {
@@ -143,9 +136,7 @@ export function QueryView({ session, workspaceId, sqlTabId, setStatus, queryHook
     const runExplain = () => presentExecute("explain");
 
     const retrySave = async () => {
-        const result = await session.coordinator.retrySqlSave(tabId);
-        if (result?.error)
-            setStatus("Error");
+        await session.coordinator.retrySqlSave(tabId);
     };
 
     const reloadFromDisk = async () => {

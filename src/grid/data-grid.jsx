@@ -7,7 +7,17 @@ import { ContextMenu } from "../ui/context-menu.jsx";
 import { InsertRows } from "./insert-rows.jsx";
 import { getEdit, isDeleted, setInsertCell } from "./pending-changes.js";
 import { Icon } from "../ui/icon.jsx";
-import { cellClickIntent, isCellInSelection, isRowInSelection, nextGridPoint, pointFromCell } from "./grid-selection.js";
+import { cellClickIntent, cellHighlightClass, isCellInSelection, nextGridPoint, pointFromCell, rowHighlightClass } from "./grid-selection.js";
+import { isEditableClipboardTarget } from "../lib/suppress-native-menu.js";
+
+function gridOwnsClipboard(grid, target) {
+    if (!grid)
+        return false;
+    if (target && grid.contains(target))
+        return true;
+    const active = typeof document !== "undefined" ? document.activeElement : null;
+    return Boolean(active && grid.contains(active));
+}
 
 function normalizeInput(value) {
     if (value === null)
@@ -29,7 +39,7 @@ function Cols({ widths }) {
     );
 }
 
-export function DataGrid({ page, pageIndex = 0, pageSize = 1, changes, editable, mutationLocked, onChange, editing, setEditing, onContextItems, onCopyColumnName, onViewCell, selectedCell, selection, onSelectCell, onClearSelection, onRevertSelected, canRevert, scrollTarget, sortDirections, onSort }) {
+export function DataGrid({ page, pageIndex = 0, pageSize = 1, changes, editable, mutationLocked, onChange, editing, setEditing, onContextItems, onCopyColumnName, onViewCell, selectedCell, selection, onSelectCell, onClearSelection, onRevertSelected, onCopySelection, onPasteSelection, canRevert, scrollTarget, sortDirections, onSort }) {
     const { displayColumns, displayRows, keyValuesFor } = page;
     const [menu, setMenu] = useState(null);
     const gridRef = useRef(null);
@@ -38,6 +48,10 @@ export function DataGrid({ page, pageIndex = 0, pageSize = 1, changes, editable,
     const headerRefs = useRef(new Map());
     const cellRefs = useRef(new Map());
     const collapseTimerRef = useRef(null);
+    const onCopySelectionRef = useRef(onCopySelection);
+    const onPasteSelectionRef = useRef(onPasteSelection);
+    onCopySelectionRef.current = onCopySelection;
+    onPasteSelectionRef.current = onPasteSelection;
     const insertIds = (changes.model.inserts || []).map((insert) => insert.id);
     const selectionCtx = { columnCount: displayColumns.length, rowCount: displayRows.length, insertIds };
     const colWidths = useFrozenColumnWidths(headTableRef, bodyTableRef, [displayColumns, displayRows, editable, editing]);
@@ -51,6 +65,53 @@ export function DataGrid({ page, pageIndex = 0, pageSize = 1, changes, editable,
     };
 
     useEffect(() => () => clearCollapseTimer(), []);
+
+    useEffect(() => {
+        const ignore = (target) => isEditableClipboardTarget(target) || !gridOwnsClipboard(gridRef.current, target);
+        const onCopy = (event) => {
+            if (ignore(event.target))
+                return;
+            if (!onCopySelectionRef.current?.(event))
+                return;
+            event.preventDefault();
+            event.stopPropagation();
+        };
+        const onPaste = (event) => {
+            if (ignore(event.target))
+                return;
+            event.preventDefault();
+            event.stopPropagation();
+            void onPasteSelectionRef.current?.(event);
+        };
+        const onKeyDown = (event) => {
+            if (ignore(event.target))
+                return;
+            const command = event.metaKey || event.ctrlKey;
+            if (!command || event.altKey || event.shiftKey)
+                return;
+            const key = event.key.toLowerCase();
+            if (key === "c") {
+                if (!onCopySelectionRef.current?.(event))
+                    return;
+                event.preventDefault();
+                event.stopPropagation();
+                return;
+            }
+            if (key === "v") {
+                event.preventDefault();
+                event.stopPropagation();
+                void onPasteSelectionRef.current?.(event);
+            }
+        };
+        window.addEventListener("copy", onCopy, true);
+        window.addEventListener("paste", onPaste, true);
+        window.addEventListener("keydown", onKeyDown, true);
+        return () => {
+            window.removeEventListener("copy", onCopy, true);
+            window.removeEventListener("paste", onPaste, true);
+            window.removeEventListener("keydown", onKeyDown, true);
+        };
+    }, []);
 
     useEffect(() => {
         if (!scrollTarget)
@@ -84,10 +145,15 @@ export function DataGrid({ page, pageIndex = 0, pageSize = 1, changes, editable,
         ? [{ label: "Revert Selected", onClick: () => onRevertSelected() }]
         : [];
 
+    const clipboardMenuItems = [
+        { label: "Copy", onClick: () => { void onCopySelection?.(); } },
+        ...(editable && !mutationLocked ? [{ label: "Paste", onClick: () => { void onPasteSelection?.(); } }] : []),
+    ];
+
     const rowContextItems = (r, c) => {
         const column = displayColumns[c];
         const value = displayRows[r][c];
-        const items = [...revertMenuItem, ...onContextItems(value, r, column)];
+        const items = [...clipboardMenuItems, ...revertMenuItem, ...onContextItems(value, r, column)];
         if (editable && !mutationLocked) {
             items.push({ separator: true });
             items.push({
@@ -102,13 +168,15 @@ export function DataGrid({ page, pageIndex = 0, pageSize = 1, changes, editable,
         return items;
     };
 
-    const insertContextItems = () => revertMenuItem;
+    const insertContextItems = () => [...clipboardMenuItems, ...revertMenuItem];
 
     const focusGrid = () => {
         gridRef.current.focus({ preventScroll: true });
     };
 
     const applyCellPointer = (cell, event) => {
+        if (event?.target?.closest?.("td.editing"))
+            return;
         focusGrid();
         const point = pointFromCell(cell);
         const intent = cellClickIntent(event, isCellInSelection(selection, point, selectionCtx));
@@ -287,9 +355,8 @@ export function DataGrid({ page, pageIndex = 0, pageSize = 1, changes, editable,
                     {displayRows.map((row, r) => {
                         const deleted = editable && isDeleted(changes.model, keyValuesFor(r));
                         const rowKey = { type: "row", row: r };
-                        const rowSelected = isRowInSelection(selection, rowKey, selectionCtx);
                         return (
-                            <tr key={r} className={[deleted ? "row-deleted" : "", rowSelected ? "row-selected" : ""].filter(Boolean).join(" ") || undefined}>
+                            <tr key={r} className={rowHighlightClass(selection, rowKey, selectionCtx, selectedCell, [deleted ? "row-deleted" : ""])}>
                                 {editable ? (
                                     <td className="gutter" onClick={(event) => selectRow(r, event)}>
                                         {gutterRowNumber(pageIndex, pageSize, r)}
@@ -299,13 +366,13 @@ export function DataGrid({ page, pageIndex = 0, pageSize = 1, changes, editable,
                                     const column = displayColumns[c];
                                     const edit = editable ? getEdit(changes.model, keyValuesFor(r), column.name) : { edited: false };
                                     const isEditing = editing && editing.kind === "row" && editing.row === r && editing.column === column.name;
-                                    const selected = isCellInSelection(selection, { type: "row", row: r, column: c }, selectionCtx);
+                                    const point = { type: "row", row: r, column: c };
                                     if (isEditing)
                                         return (
                                             <td
                                                 key={c}
                                                 ref={(node) => node ? cellRefs.current.set(`${r}:${c}`, node) : cellRefs.current.delete(`${r}:${c}`)}
-                                                className={`editing${selected ? " cell-selected" : ""}`}
+                                                className={cellHighlightClass(selection, point, selectionCtx, selectedCell, ["editing"])}
                                                 onClick={(event) => selectCell(r, c, event)}
                                             >
                                                 <CellEditor
@@ -321,7 +388,7 @@ export function DataGrid({ page, pageIndex = 0, pageSize = 1, changes, editable,
                                         <td
                                             key={c}
                                             ref={(node) => node ? cellRefs.current.set(`${r}:${c}`, node) : cellRefs.current.delete(`${r}:${c}`)}
-                                            className={[edit.edited ? "cell-edited" : "", selected ? "cell-selected" : ""].filter(Boolean).join(" ") || undefined}
+                                            className={cellHighlightClass(selection, point, selectionCtx, selectedCell, [edit.edited ? "cell-edited" : ""])}
                                             title={info.title}
                                             onClick={(event) => selectCell(r, c, event)}
                                             onDoubleClick={() => {
@@ -347,6 +414,7 @@ export function DataGrid({ page, pageIndex = 0, pageSize = 1, changes, editable,
                             mutationLocked={mutationLocked}
                             selection={selection}
                             selectionCtx={selectionCtx}
+                            selectedCell={selectedCell}
                             onSelectInsert={selectInsert}
                             onSelectInsertRow={selectInsertRow}
                             onOpenMenu={(event, insertId, c) => {

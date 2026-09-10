@@ -143,6 +143,38 @@ test("exportResult returns EXPORT_FAILED with the write error", async () => {
     writeFails = false;
 });
 
+test("database dump exports only the selected tables without listing the catalog", async () => {
+    folder = "/tmp/exports";
+    fileName = "database.sql";
+    const calls = [];
+    let listed = 0;
+    const dumped = await dumpDatabase({
+        conn: { name: "App DB" },
+        ctx: { database: "app" },
+        driver: {
+            async listTables() {
+                listed += 1;
+                return [{ name: "accounts" }, { name: "orders" }, { name: "book_list", kind: "view" }];
+            },
+            async dumpDatabase(ctx, path, options) {
+                calls.push(options.table);
+            },
+        },
+    }, { tables: [{ name: "book_list", kind: "view" }, { name: "orders", kind: "table" }] });
+    assert.equal(dumped.status, "dumped");
+    assert.equal(listed, 0);
+    assert.deepEqual(calls, ["orders", "book_list"]);
+});
+
+test("database dump cancels when no tables are selected", async () => {
+    const dumped = await dumpDatabase({
+        conn: { name: "App DB" },
+        ctx: {},
+        driver: { async dumpDatabase() { throw new Error("should not dump"); } },
+    }, { tables: [] });
+    assert.deepEqual(dumped, { status: "cancelled" });
+});
+
 test("database dump keeps the active connection context and driver timeout", async () => {
     const calls = [];
     folder = "/tmp/exports";
@@ -527,6 +559,23 @@ test("failed database restore reports error progress", async () => {
     assert.equal(progress.at(-1).label, "syntax error");
 });
 
+test("database restore imports the dump without clearing other tables", async () => {
+    let cleared = 0;
+    const restored = await restoreDatabase({
+        conn: { engine: "sqlite" },
+        ctx: {},
+        driver: {
+            async clearDatabase() { cleared += 1; },
+            async importDatabase() {},
+        },
+    }, {
+        pickFile: async () => "/tmp/exports/database.sql",
+        confirm: async () => "Import",
+    });
+    assert.equal(restored.status, "restored");
+    assert.equal(cleared, 0);
+});
+
 test("transfer dialog projects a determinate percent for every transfer kind", () => {
     assert.deepEqual(transferDialogFor({ kind: "import", status: "running", percent: 40 }), {
         kind: "import",
@@ -564,13 +613,15 @@ test("data import reports percent before each batch for every row format", async
             onProgress: (value) => progress.push({ percent: value.percent, status: value.status, kind: value.kind }),
         });
         assert.deepEqual(imported, { rowCount: 60 });
-        assert.equal(queries.length, 2);
+        assert.equal(queries.length, 3);
         assert.equal(queries[0].options.timeoutMs, 1000);
-        assert.match(queries[0].sql, /INSERT INTO "items"/);
+        assert.equal(queries[0].sql, 'DELETE FROM "items";');
+        assert.match(queries[1].sql, /INSERT INTO "items"/);
         assert.equal(progress[0].percent, 0);
         assert.equal(progress[0].kind, "import");
         assert.equal(progress[1].percent, 0);
-        assert.equal(progress[2].percent, 83);
+        assert.equal(progress[2].percent, 0);
+        assert.equal(progress[3].percent, 83);
         assert.equal(progress.at(-1).percent, 100);
     }
 });
@@ -606,7 +657,23 @@ test("data import maps json rows onto the union of keys with nulls", async () =>
         path: "/x",
         read: async () => JSON.stringify([{ id: 1, name: "Ada" }, { id: 2 }]),
     });
-    assert.match(queries[0], /INSERT INTO "t" \("id", "name"\) VALUES \(1, 'Ada'\), \(2, NULL\)/);
+    assert.equal(queries[0], 'DELETE FROM "t";');
+    assert.match(queries[1], /INSERT INTO "t" \("id", "name"\) VALUES \(1, 'Ada'\), \(2, NULL\)/);
+});
+
+test("csv and json import truncate MySQL tables before inserting", async () => {
+    const queries = [];
+    await importCommittedObject({
+        driver: { async runQuery(_ctx, sql) { queries.push(sql); return [{}]; } },
+        engine: "mysql",
+        operationCtx: {},
+        objectRef: { database: "app", table: "orders" },
+        format: "csv",
+        path: "/x",
+        read: async () => "id\n1\n",
+    });
+    assert.equal(queries[0], "TRUNCATE TABLE `app`.`orders`;");
+    assert.match(queries[1], /INSERT INTO `app`.`orders`/);
 });
 
 test("data import splits sql dumps into batched statements", async () => {

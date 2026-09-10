@@ -1,17 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { OBJECT_EXPORT_LIMIT, chooseExportPath, chooseImportPath, exportCommittedObject } from "../src/transfer/transfer.js";
+import { chooseExportPath, chooseImportPath, exportCommittedObject } from "../src/transfer/transfer.js";
 import { isCurrentDataExport } from "../src/workbench/workspace-state.js";
 
 const ref = { database: "app", schema: "public", table: "orders" };
 
-test("object export serializes CSV, pretty JSON, and table-only SQL inserts from one frozen query", async () => {
+test("object export serializes CSV, pretty JSON, and SQL dumps from one frozen query", async () => {
     for (const [format, expected] of [["csv", "id,name\n1,Ada\n"], ["json", "  \"id\": 1"], ["sql", "INSERT INTO \"orders\" (\"id\", \"name\") VALUES (1, 'Ada');"]]) {
         const calls = [];
         let written;
         const exported = await exportCommittedObject({
-            driver: { async runQuery(ctx, sql, options) { calls.push({ ctx, sql, options }); return [{ columns: [{ name: "id" }, { name: "name" }], rows: [[1, "Ada"]] }]; } },
+            driver: {
+                async runQuery(ctx, sql, options) { calls.push({ ctx, sql, options }); return [{ columns: [{ name: "id" }, { name: "name" }], rows: [[1, "Ada"]] }]; },
+                async ddl() { return 'CREATE TABLE "orders" ("id" INTEGER, "name" TEXT)'; },
+            },
             engine: "postgres",
             operationCtx: { database: "app" },
             objectRef: ref,
@@ -21,23 +24,30 @@ test("object export serializes CSV, pretty JSON, and table-only SQL inserts from
             async write(path, content) { written = { path, content }; },
         });
         assert.equal(calls.length, 1);
-        assert.equal(calls[0].sql, 'SELECT * FROM "public"."orders" LIMIT 1000000 OFFSET 0');
+        assert.equal(calls[0].sql, 'SELECT * FROM "public"."orders" LIMIT 200 OFFSET 0');
         assert.equal(calls[0].options.timeoutMs, 1000);
         assert.equal(written.path, "/tmp/export");
         assert.ok(written.content.includes(expected));
-        assert.deepEqual(exported, { rowCount: 1, capped: false });
+        if (format === "sql") {
+            assert.match(written.content, /^DROP TABLE IF EXISTS "orders";/);
+            assert.match(written.content, /CREATE TABLE "orders"/);
+        }
+        assert.deepEqual(exported, { rowCount: 1 });
     }
 });
 
-test("SQL insert export omits catalog and schema so the dump can load in another database", async () => {
-    for (const [engine, objectRef, expected] of [
-        ["mysql", { database: "source_db", table: "orders" }, "INSERT INTO `orders` (`id`) VALUES (1);"],
-        ["postgres", { database: "source_db", schema: "public", table: "orders" }, 'INSERT INTO "orders" ("id") VALUES (1);'],
-        ["sqlite", { database: "app", schema: "main", table: "orders" }, 'INSERT INTO "orders" ("id") VALUES (1);'],
+test("SQL table export omits catalog and schema so the dump can load in another database", async () => {
+    for (const [engine, objectRef, ddl, expectedDrop, expectedCreate, expectedInsert] of [
+        ["mysql", { database: "source_db", table: "orders" }, "CREATE TABLE `source_db`.`orders` (`id` int)", "DROP TABLE IF EXISTS `orders`;", "CREATE TABLE `orders` (`id` int);", "INSERT INTO `orders` (`id`) VALUES (1);"],
+        ["postgres", { database: "source_db", schema: "public", table: "orders" }, 'CREATE TABLE "public"."orders" ("id" integer)', 'DROP TABLE IF EXISTS "orders";', 'CREATE TABLE "orders" ("id" integer);', 'INSERT INTO "orders" ("id") VALUES (1);'],
+        ["sqlite", { database: "app", schema: "main", table: "orders" }, 'CREATE TABLE "orders" ("id" INTEGER)', 'DROP TABLE IF EXISTS "orders";', 'CREATE TABLE "orders" ("id" INTEGER);', 'INSERT INTO "orders" ("id") VALUES (1);'],
     ]) {
         let written;
         await exportCommittedObject({
-            driver: { async runQuery() { return [{ columns: [{ name: "id" }], rows: [[1]] }]; } },
+            driver: {
+                async runQuery() { return [{ columns: [{ name: "id" }], rows: [[1]] }]; },
+                async ddl() { return ddl; },
+            },
             engine,
             operationCtx: {},
             objectRef,
@@ -45,16 +55,16 @@ test("SQL insert export omits catalog and schema so the dump can load in another
             path: "/tmp/export",
             write: async (_path, content) => { written = content; },
         });
-        assert.equal(written, expected);
+        assert.equal(written, `${expectedDrop}\n${expectedCreate}\n${expectedInsert}`);
         assert.doesNotMatch(written, /source_db|public|main/);
     }
 });
 
-test("object export writes once after one query and preserves the cap result without a count", async () => {
+test("sqlite object export pages until a short chunk", async () => {
     let queries = 0;
     let writes = 0;
     const exported = await exportCommittedObject({
-        driver: { async runQuery() { queries += 1; return [{ columns: [{ name: "id" }], rows: Array.from({ length: OBJECT_EXPORT_LIMIT }, (_, id) => [id]) }]; } },
+        driver: { async runQuery() { queries += 1; return [{ columns: [{ name: "id" }], rows: [[1], [2], [3]] }]; } },
         engine: "sqlite",
         operationCtx: {},
         objectRef: { table: "orders" },
@@ -64,7 +74,41 @@ test("object export writes once after one query and preserves the cap result wit
     });
     assert.equal(queries, 1);
     assert.equal(writes, 1);
-    assert.deepEqual(exported, { rowCount: OBJECT_EXPORT_LIMIT, capped: true });
+    assert.deepEqual(exported, { rowCount: 3 });
+});
+
+test("object export pages until a short chunk instead of capping rows", async () => {
+    const { MYSQL_XML_ROW_CHUNK } = await import("../src/grid/table-page-query.js");
+    for (const [engine, first, second] of [
+        ["mysql", "SELECT * FROM `app`.`orders` LIMIT 200 OFFSET 0", "SELECT * FROM `app`.`orders` LIMIT 200 OFFSET 200"],
+        ["postgres", 'SELECT * FROM "public"."orders" LIMIT 200 OFFSET 0', 'SELECT * FROM "public"."orders" LIMIT 200 OFFSET 200'],
+        ["sqlite", 'SELECT * FROM "orders" LIMIT 200 OFFSET 0', 'SELECT * FROM "orders" LIMIT 200 OFFSET 200'],
+    ]) {
+        const sqls = [];
+        const objectRef = engine === "sqlite"
+            ? { table: "orders" }
+            : engine === "postgres"
+                ? { schema: "public", table: "orders" }
+                : { database: "app", table: "orders" };
+        const exported = await exportCommittedObject({
+            driver: {
+                async runQuery(_ctx, sql) {
+                    sqls.push(sql);
+                    if (sql.includes("OFFSET 200"))
+                        return [{ columns: [{ name: "id" }], rows: [[201]] }];
+                    return [{ columns: [{ name: "id" }], rows: Array.from({ length: MYSQL_XML_ROW_CHUNK }, (_, index) => [index + 1]) }];
+                },
+            },
+            engine,
+            operationCtx: {},
+            objectRef,
+            format: "csv",
+            path: "/tmp/export",
+            write: async () => {},
+        });
+        assert.deepEqual(sqls, [first, second]);
+        assert.deepEqual(exported, { rowCount: MYSQL_XML_ROW_CHUNK + 1 });
+    }
 });
 
 test("object export does not hide query or write failures", async () => {
@@ -138,6 +182,23 @@ test("choosing no destination settles before any query or write", async () => {
     }
 });
 
+test("SQL view export stays insert-only", async () => {
+    let written;
+    await exportCommittedObject({
+        driver: {
+            async runQuery() { return [{ columns: [{ name: "id" }], rows: [[1]] }]; },
+            async ddl() { throw new Error("view export must not load table DDL"); },
+        },
+        engine: "postgres",
+        operationCtx: {},
+        objectRef: { schema: "reporting", table: "active_orders", kind: "view" },
+        format: "sql",
+        path: "/tmp/export",
+        write: async (_path, content) => { written = content; },
+    });
+    assert.equal(written, 'INSERT INTO "active_orders" ("id") VALUES (1);');
+});
+
 test("view export uses the frozen qualified view reference", async () => {
     let sql;
     await exportCommittedObject({
@@ -149,5 +210,5 @@ test("view export uses the frozen qualified view reference", async () => {
         path: "/tmp/active-orders.json",
         write: async () => {},
     });
-    assert.equal(sql, 'SELECT * FROM "reporting"."active_orders" LIMIT 1000000 OFFSET 0');
+    assert.equal(sql, 'SELECT * FROM "reporting"."active_orders" LIMIT 200 OFFSET 0');
 });

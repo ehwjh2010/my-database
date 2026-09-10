@@ -1,7 +1,8 @@
 import "./styles.css";
 import { createRoot } from "react-dom/client";
 import { WorkbenchApp } from "./app/workbench-app.jsx";
+import { suppressNativeContextMenu } from "./lib/suppress-native-menu.js";
 
-document.addEventListener("contextmenu", (event) => event.preventDefault());
+suppressNativeContextMenu();
 
 createRoot(document.getElementById("root")).render(<WorkbenchApp />);

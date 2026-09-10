@@ -61,6 +61,7 @@ test("mysql dump omits GTID purged metadata and dumps in three phases", async ()
     assert.ok(dumps[0].includes("--no-data"));
     assert.ok(dumps[0].includes("--routines"));
     assert.ok(dumps[0].includes("--skip-triggers"));
+    assert.ok(dumps[0].includes("--add-drop-table"));
     assert.ok(dumps[1].includes("--no-create-info"));
     assert.ok(dumps[1].includes("--skip-triggers"));
     assert.ok(!dumps[1].includes("--no-data"));

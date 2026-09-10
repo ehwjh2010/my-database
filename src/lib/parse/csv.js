@@ -1,5 +1,6 @@
 export function parseCsv(text, opts = {}) {
     const bareEmpty = "bareEmpty" in opts ? opts.bareEmpty : null;
+    const delimiter = opts.delimiter ?? ",";
     const rows = [];
     let row = [];
     let value = "";
@@ -39,7 +40,7 @@ export function parseCsv(text, opts = {}) {
             i++;
             continue;
         }
-        if (ch === ",") {
+        if (ch === delimiter) {
             push();
             i++;
             continue;

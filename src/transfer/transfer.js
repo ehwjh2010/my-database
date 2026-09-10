@@ -7,8 +7,10 @@ import { pickOpenFile } from "../lib/pick-file.js";
 import { copyToClipboard } from "../lib/clipboard.js";
 import { splitForEngine } from "../lib/sql/statement-split.js";
 import { clampPercent, transferPercent } from "../lib/transfer-percent.js";
+import { tableSqlDump } from "./object-sql-dump.js";
+import { truncateSql } from "../lib/sql/truncate.js";
+import { MYSQL_XML_ROW_CHUNK } from "../grid/table-page-query.js";
 
-export const OBJECT_EXPORT_LIMIT = 1000000;
 const CSV_BATCH = 50;
 const STATEMENT_BATCH = 100;
 const TRANSFER_TIMEOUT = 600000;
@@ -90,17 +92,39 @@ export async function chooseImportPath(format) {
     return pickOpenFile({ title: `Choose ${ext.toUpperCase()} file` });
 }
 
+async function fetchExportResult(driver, engine, operationCtx, objectRef, timeoutMs) {
+    const opts = { timeoutMs };
+    let columns = [];
+    const rows = [];
+    for (let offset = 0; ; offset += MYSQL_XML_ROW_CHUNK) {
+        const sql = buildSelect(engine, objectRef, { limit: MYSQL_XML_ROW_CHUNK, offset });
+        const raw = (await driver.runQuery(operationCtx, sql, opts))[0] || { columns: [], rows: [] };
+        if (raw.columns.length)
+            columns = raw.columns;
+        rows.push(...raw.rows);
+        if (raw.rows.length < MYSQL_XML_ROW_CHUNK)
+            return { columns, rows };
+    }
+}
+
 export async function exportCommittedObject({ driver, engine, operationCtx, objectRef, format, path, timeoutMs, write = writeTextFile, onProgress }) {
     emitProgress(onProgress, "export", "running", "Fetching rows…", 0, true);
-    const sql = buildSelect(engine, objectRef, { limit: OBJECT_EXPORT_LIMIT, offset: 0 });
-    const result = (await driver.runQuery(operationCtx, sql, { timeoutMs }))[0];
+    const wantDdl = format === "sql" && objectRef?.kind !== "view";
+    const [result, ddl] = await Promise.all([
+        fetchExportResult(driver, engine, operationCtx, objectRef, timeoutMs),
+        wantDdl ? driver.ddl(operationCtx, objectRef) : Promise.resolve(""),
+    ]);
     if (!result)
         throw new Error("EXPORT_RESULT_MISSING");
+    const inserts = resultToInserts(engine, objectRef, result);
+    const content = wantDdl
+        ? tableSqlDump(engine, objectRef, ddl, inserts)
+        : exportContent(engine, objectRef, result, format);
     emitProgress(onProgress, "export", "running", "Writing file…", 0);
-    await write(path, exportContent(engine, objectRef, result, format), (percent) => {
+    await write(path, content, (percent) => {
         emitProgress(onProgress, "export", "running", "Writing file…", percent);
     });
-    return { rowCount: result.rows.length, capped: result.rows.length === OBJECT_EXPORT_LIMIT };
+    return { rowCount: result.rows.length };
 }
 
 export async function importCommittedObject({ driver, engine, operationCtx, objectRef, format, path, timeoutMs, read = readTextFile, onProgress }) {
@@ -143,6 +167,8 @@ function parseCsvRows(text) {
 async function insertRows({ driver, engine, operationCtx, objectRef, columns, data, timeoutMs, onProgress }) {
     const target = qualifiedName(engine, objectRef);
     const names = columns.map((name) => quoteIdent(engine, name)).join(", ");
+    emitProgress(onProgress, "import", "running", "Clearing table…", 0, true);
+    await driver.runQuery(operationCtx, `${truncateSql(engine, objectRef)};`, { timeoutMs });
     const label = "Importing data…";
     const total = data.length;
     for (let index = 0; index < data.length; index += CSV_BATCH) {
@@ -216,15 +242,22 @@ export async function exportActive(session, format) {
     return exportResult(session.conn.engine, context.objectRef, context.result, format, entry.name);
 }
 
-export async function dumpDatabase(session, { onProgress } = {}) {
+async function catalogDumpObjects(session) {
+    const tables = typeof session.driver.listTables === "function" ? await session.driver.listTables(session.ctx) : [];
+    return (tables || []).filter((table) => table?.name);
+}
+
+export async function dumpDatabase(session, { onProgress, tables } = {}) {
+    const selected = tables ? tables.filter((table) => table?.name) : null;
+    if (selected && !selected.length)
+        return { status: "cancelled" };
     const conn = session.conn;
     const stamp = new Date(Date.now()).toISOString().replace(/[:.]/g, "-");
     const path = await chooseFile(`${conn.name.replace(/\W+/g, "_")}-${stamp}.sql`);
     if (!path)
         return { status: "cancelled" };
     try {
-        const tables = typeof session.driver.listTables === "function" ? await session.driver.listTables(session.ctx) : [];
-        const objects = (tables || []).filter((table) => table?.name);
+        const objects = selected || await catalogDumpObjects(session);
         if (!objects.length) {
             emitProgress(onProgress, "dump", "running", "Dumping database…", 0, true);
             await session.driver.dumpDatabase(session.ctx, path, { timeoutMs: TRANSFER_TIMEOUT });
@@ -261,7 +294,7 @@ async function chooseDumpFile() {
 async function confirmRestore(path) {
     return muxy.dialog.confirm({
         title: "Import database",
-        message: `Import this SQL dump into the current database?\n\n${path}\n\nAll existing tables and views in this database will be dropped first.`,
+        message: `Import this SQL dump into the current database?\n\n${path}\n\nTables and views in the dump will be replaced. Other objects are left unchanged.`,
         buttons: ["Import", "Cancel"],
         cancel: "Cancel",
         style: "warning",
@@ -277,7 +310,7 @@ export async function restoreDatabase(session, { onProgress, pickFile = chooseDu
         return { status: "cancelled" };
     emitProgress(onProgress, "restore", "running", "Importing database…", 0);
     try {
-        const restored = await importDump(session, path, onProgress);
+        await importDump(session, path, onProgress);
         emitProgress(onProgress, "restore", "done", "Dump imported", 100);
         toast(`Imported ${path}`, "success");
         return { status: "restored", path };
@@ -291,8 +324,6 @@ export async function restoreDatabase(session, { onProgress, pickFile = chooseDu
 }
 
 async function importDump(session, path, onProgress) {
-    emitProgress(onProgress, "restore", "running", "Clearing database…", 0, true);
-    await session.driver.clearDatabase(session.ctx, { timeoutMs: TRANSFER_TIMEOUT });
     emitProgress(onProgress, "restore", "running", "Importing database…", 0, true);
     await session.driver.importDatabase(session.ctx, path, { timeoutMs: TRANSFER_TIMEOUT });
 }

@@ -4,6 +4,7 @@ import test from "node:test";
 import { createChanges, setEdit, toggleDelete, addInsert, setInsertCell, changeCount } from "../src/grid/pending-changes.js";
 import {
     EMPTY_SELECTION,
+    applyDeleteSelection,
     applyRevertSelection,
     expandRect,
     selectionHasPending,
@@ -11,6 +12,10 @@ import {
     singleCellSelection,
     toggleCellSelection,
     cellClickIntent,
+    cellHighlightClass,
+    paintsCellSelection,
+    rowHighlightClass,
+    singleRowSelection,
 } from "../src/grid/grid-selection.js";
 
 const columns = [{ name: "a" }, { name: "b" }, { name: "c" }];
@@ -75,6 +80,30 @@ test("applyRevertSelection reverts only cells inside a rect", () => {
     assert.equal(changes.edits.get(JSON.stringify([0])).cells.has("a"), false);
 });
 
+test("row selection marks every selected existing row for delete", () => {
+    const changes = createChanges("sqlite", { table: "items" }, { primaryKey: ["id"], rowid: false });
+    const selection = {
+        kind: "rows",
+        keys: [
+            { type: "row", row: 0 },
+            { type: "row", row: 1 },
+        ],
+    };
+    assert.equal(applyDeleteSelection(changes, selection, ctx(changes)), true);
+    assert.equal(changes.deletes.size, 2);
+    assert.deepEqual([...changes.deletes.values()], [[0], [1]]);
+});
+
+test("cell rect delete marks each unique row once and drops selected inserts", () => {
+    const changes = createChanges("sqlite", { table: "items" }, { primaryKey: ["id"], rowid: false });
+    const insert = addInsert(changes);
+    toggleDelete(changes, [1]);
+    const selection = expandRect({ type: "row", row: 0, column: 0 }, { type: "insert", insertId: insert.id, column: 1 });
+    assert.equal(applyDeleteSelection(changes, selection, ctx(changes, [insert.id])), true);
+    assert.equal(changes.deletes.size, 2);
+    assert.equal(changes.inserts.length, 0);
+});
+
 test("row selection reverts delete marks and insert rows", () => {
     const changes = createChanges("sqlite", { table: "items" }, { primaryKey: ["id"], rowid: false });
     toggleDelete(changes, [0]);
@@ -132,4 +161,24 @@ test("cellClickIntent prefers double-click ignore then Shift then Ctrl then reta
     assert.equal(cellClickIntent({ detail: 1, ctrlKey: true }, true), "additive");
     assert.equal(cellClickIntent({ detail: 1 }, true), "retain");
     assert.equal(cellClickIntent({ detail: 1 }, false), "replace");
+});
+
+test("row selection paints a current row without per-cell selection fills", () => {
+    const bounds = { columnCount: 3, rowCount: 2, insertIds: [] };
+    const selection = singleRowSelection({ type: "row", row: 0 });
+    const selectedCell = { kind: "row", row: 0, column: 1 };
+    assert.equal(paintsCellSelection(selection, { type: "row", row: 0, column: 0 }, bounds), false);
+    assert.equal(rowHighlightClass(selection, { type: "row", row: 0 }, bounds, selectedCell), "row-current row-selected");
+    assert.equal(cellHighlightClass(selection, { type: "row", row: 0, column: 1 }, bounds, selectedCell), undefined);
+    assert.equal(cellHighlightClass(selection, { type: "row", row: 0, column: 0 }, bounds, selectedCell), undefined);
+});
+
+test("clicking a cell highlights the current row and the focused cell", () => {
+    const bounds = { columnCount: 3, rowCount: 2, insertIds: [] };
+    const selection = singleCellSelection({ type: "row", row: 1, column: 2 });
+    const selectedCell = { kind: "row", row: 1, column: 2 };
+    assert.equal(rowHighlightClass(selection, { type: "row", row: 1 }, bounds, selectedCell), "row-current");
+    assert.equal(rowHighlightClass(selection, { type: "row", row: 0 }, bounds, selectedCell), undefined);
+    assert.equal(cellHighlightClass(selection, { type: "row", row: 1, column: 2 }, bounds, selectedCell), "cell-selected cell-focused");
+    assert.equal(paintsCellSelection(selection, { type: "row", row: 1, column: 0 }, bounds), false);
 });

@@ -4,7 +4,7 @@ import { Icon } from "../ui/icon.jsx";
 const FORMATS = [
     ["csv", "CSV"],
     ["json", "JSON"],
-    ["sql", "SQL INSERTs"],
+    ["sql", "SQL"],
 ];
 
 export function ObjectFormatMenu({ icon, title, action, note, onClose, onPick }) {
@@ -31,7 +31,7 @@ export function ObjectExportMenu({ onClose, onExport }) {
             icon="download"
             title="Export object"
             action="Export as"
-            note="Exports committed object data, up to 1,000,000 rows."
+            note="SQL includes DROP IF EXISTS, CREATE, and committed rows. CSV and JSON are data only."
             onClose={onClose}
             onPick={onExport}
         />
@@ -44,7 +44,7 @@ export function ObjectImportMenu({ onClose, onImport }) {
             icon="upload"
             title="Import data"
             action="Import from"
-            note="Imports into the current table. Existing rows are not modified."
+            note="CSV and JSON clear the current table then insert. SQL runs the dump, replacing a table of the same name."
             onClose={onClose}
             onPick={onImport}
         />

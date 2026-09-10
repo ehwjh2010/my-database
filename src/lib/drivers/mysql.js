@@ -213,13 +213,14 @@ export function makeMysqlDriver(engine, binaries) {
                 ...extra,
             ];
             if (opts.table) {
+                const tableArgv = baseArgv(["--add-drop-table", opts.table]);
                 if (!opts.append) {
-                    await run([...baseArgv([opts.table]), `--result-file=${outPath}`], { timeoutMs: opts.timeoutMs || 600000 });
+                    await run([...tableArgv, `--result-file=${outPath}`], { timeoutMs: opts.timeoutMs || 600000 });
                     return;
                 }
                 const part = `${outPath}.part-table`;
                 try {
-                    await run([...baseArgv([opts.table]), `--result-file=${part}`], { timeoutMs: opts.timeoutMs || 600000 });
+                    await run([...tableArgv, `--result-file=${part}`], { timeoutMs: opts.timeoutMs || 600000 });
                     await run(["perl", "-e", MERGE_DUMP_SCRIPT, outPath, part]);
                 }
                 catch (error) {
@@ -229,7 +230,7 @@ export function makeMysqlDriver(engine, binaries) {
                 return;
             }
             const phases = [
-                baseArgv(["--no-data", "--skip-triggers", "--routines", "--events"]),
+                baseArgv(["--no-data", "--skip-triggers", "--routines", "--events", "--add-drop-table"]),
                 baseArgv(["--no-create-info", "--skip-triggers"]),
                 baseArgv(["--no-create-info", "--no-data", "--triggers"]),
             ];

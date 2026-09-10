@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { useSession } from "./session-context.jsx";
 import { Topbar } from "./topbar.jsx";
 import { Sidebar } from "./sidebar.jsx";
-import { Statusbar } from "./statusbar.jsx";
 import { EmptyState } from "../ui/empty-state.jsx";
 import { closeTunnel } from "../lib/tunnel.js";
 import { clearCredFiles } from "../lib/cred-file.js";
@@ -35,7 +34,7 @@ function fileErrorMessage(error) {
 }
 
 export function Workbench() {
-    const { session, view, surface, ref, activeSqlId, activateWorkspace, activateSql, closeWorkspace, createAndOpenFile, openSqlFile, enterConsole, closeSql, setStatus, refreshSchema, schemaEpoch, queryHooksRef, newFileRef, hasDatabase } = useSession();
+    const { session, view, surface, ref, activeSqlId, activateWorkspace, activateSql, closeWorkspace, createAndOpenFile, openSqlFile, enterConsole, closeSql, refreshSchema, schemaEpoch, queryHooksRef, newFileRef, hasDatabase } = useSession();
     const [databaseExportOpen, setDatabaseExportOpen] = useState(false);
     const [databaseImportOpen, setDatabaseImportOpen] = useState(false);
     const [dumpProgress, setDumpProgress] = useState(null);
@@ -191,10 +190,10 @@ export function Workbench() {
         return () => window.removeEventListener("pagehide", onHide);
     }, [session]);
 
-    const startDatabaseDump = async () => {
+    const startDatabaseDump = async (tables) => {
         if (dumpProgress?.status === "running")
             return;
-        await dumpDatabase(session, { onProgress: setDumpProgress });
+        await dumpDatabase(session, { onProgress: setDumpProgress, tables });
     };
 
     const startDatabaseRestore = async () => {
@@ -209,15 +208,15 @@ export function Workbench() {
         if (surface === "console") {
             const sqlEntry = session.sqlRegistry.byId[activeSqlId];
             if (sqlEntry)
-                return <QueryView key={`sql:${activeSqlId}`} session={session} sqlTabId={activeSqlId} setStatus={setStatus} queryHooksRef={queryHooksRef} />;
+                return <QueryView key={`sql:${activeSqlId}`} session={session} sqlTabId={activeSqlId} queryHooksRef={queryHooksRef} />;
         }
         if (view === "query")
-            return <QueryView key={session.registry.activeId} session={session} workspaceId={session.registry.activeId} setStatus={setStatus} queryHooksRef={queryHooksRef} />;
+            return <QueryView key={session.registry.activeId} session={session} workspaceId={session.registry.activeId} queryHooksRef={queryHooksRef} />;
         if (!ref)
             return <EmptyState icon="table" description="从左侧选择一张表" />;
         if (view === "structure")
             return <StructureView key={`${schemaEpoch}:${ref.table}`} session={session} workspaceId={session.registry.activeId} tableRef={ref} />;
-        return <DataView key={`${schemaEpoch}:${objectCacheKey(ref)}`} session={session} tableRef={ref} workspaceId={session.registry.activeId} setStatus={setStatus} />;
+        return <DataView key={`${schemaEpoch}:${objectCacheKey(ref)}`} session={session} tableRef={ref} workspaceId={session.registry.activeId} />;
     };
 
     return (
@@ -243,7 +242,6 @@ export function Workbench() {
                     <div className="flex min-h-0 min-w-0 flex-1 flex-col">{main()}</div>
                 </div>
             </div>
-            <Statusbar />
             {newFileOpen ? <NewSqlFileModal error={newFileError} onClose={() => setNewFileOpen(false)} onSubmit={createFile} /> : null}
             {renameFile ? <RenameSqlFileModal name={renameFile.name} error={renameFileError} onClose={() => setRenameFile(null)} onSubmit={renameFileSubmit} /> : null}
             {databaseExportOpen ? (

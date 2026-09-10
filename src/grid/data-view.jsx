@@ -1,13 +1,14 @@
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { Icon } from "../ui/icon.jsx";
 import { toast } from "../ui/toast.js";
 import { buildCount } from "../lib/sql/select-builder.js";
 import { buildChangeScript } from "../lib/sql/change-script.js";
 import { chooseExportPath, chooseImportPath, copyResult, exportCommittedObject, importCommittedObject } from "../transfer/transfer.js";
 import { TransferProgressModal } from "../transfer/transfer-progress-modal.jsx";
-import { copyToClipboard } from "../lib/clipboard.js";
+import { copyToClipboard, readClipboard } from "../lib/clipboard.js";
 import { setEdit, toggleDelete, addInsert, removeInsert, clearChanges, isDeleted, changeCount } from "./pending-changes.js";
-import { applyRevertSelection, EMPTY_SELECTION, expandRect, pointFromCell, rowKeyFromPoint, rowRangeSelection, selectionHasPending, singleCellSelection, singleRowSelection, toggleCellSelection, toggleRowSelection } from "./grid-selection.js";
+import { applyGridPaste, clipboardMatrixFromSelection, gridCellValue, parseGridClipboard, pasteOrigin, serializeGridClipboard } from "./grid-clipboard.js";
+import { applyDeleteSelection, applyRevertSelection, cellFromPoint, EMPTY_SELECTION, expandRect, pointFromCell, rowKeyFromPoint, rowRangeSelection, selectionHasPending, singleCellSelection, singleRowSelection, toggleCellSelection, toggleRowSelection } from "./grid-selection.js";
 import { useTablePage } from "./use-table-page.js";
 import { DataGrid } from "./data-grid.jsx";
 import { FilterBar } from "./filter-bar.jsx";
@@ -45,7 +46,7 @@ async function copyText(text) {
     toast("Copied");
 }
 
-export function DataView({ session, tableRef, workspaceId, setStatus }) {
+export function DataView({ session, tableRef, workspaceId }) {
     const { notifyPendingChanges, refreshData, columnFocus, consumeColumnFocus, dataOperation } = useSession();
     const coordinator = session.coordinator;
     const activeWorkspaceKey = objectCacheKey(tableRef);
@@ -60,6 +61,7 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
     const [scrollTarget, setScrollTarget] = useState(null);
     const [review, setReview] = useState(null);
     const [viewerValue, setViewerValue] = useState(undefined);
+    const pasteLock = useRef(0);
     const [exportOpen, setExportOpen] = useState(false);
     const [importOpen, setImportOpen] = useState(false);
     const [transferProgress, setTransferProgress] = useState(null);
@@ -113,11 +115,6 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
     useEffect(() => {
         setTransferProgress(null);
     }, [activeWorkspaceKey]);
-
-    useEffect(() => {
-        if (!page.loading && !page.error)
-            setStatus(`${tableRef.table} · ${page.displayRows.length} rows · ${page.elapsed}ms`);
-    }, [page, tableRef, setStatus]);
 
     useEffect(() => {
         if (!columnFocus || columnFocus.workspaceId !== workspaceId || page.loading)
@@ -198,7 +195,6 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
     const openReview = (applyDirectly) => {
         const statements = buildChangeScript(model);
         if (!statements.length) {
-            setStatus("DML not generated");
             toast("DML_NOT_GENERATED", "warning");
             return;
         }
@@ -209,7 +205,6 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
     };
 
     const apply = async (statements) => {
-        setStatus("Applying changes…");
         const revision = model.revision;
         const operation = coordinator.startDataOperation(workspaceId, "apply", { pendingRevision: revision, statements: Object.freeze([...statements]) });
         if (operation.error) {
@@ -219,7 +214,6 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
         const snapshot = coordinator.initiateDataApply(workspaceId, operation.statements);
         if (snapshot.error) {
             coordinator.settleDataOperation(operation);
-            setStatus("Apply failed");
             toast(snapshot.error, "warning");
             return;
         }
@@ -234,7 +228,6 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
             }
         } catch (error) {
             if (isCurrentDataApply(session, snapshot.ownership)) {
-                setStatus("Apply failed");
                 toast(error.message, "warning");
             }
         } finally {
@@ -316,6 +309,49 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
         }
     };
 
+    const clipboardCtx = () => ({
+        ...selectionCtx,
+        columns: page.displayColumns,
+        displayRows: page.displayRows,
+        valueAt: (point) => gridCellValue(page, model, point),
+    });
+
+    const copySelection = (event) => {
+        const matrix = clipboardMatrixFromSelection(selection, selectedCell, clipboardCtx());
+        if (!matrix.length)
+            return false;
+        const text = serializeGridClipboard(matrix);
+        try {
+            event?.clipboardData?.setData("text/plain", text);
+        }
+        catch {
+        }
+        void copyToClipboard(text);
+        return true;
+    };
+
+    const pasteSelection = async (event) => {
+        if (!page.editable || mutationLocked)
+            return false;
+        const now = Date.now();
+        if (now - pasteLock.current < 250)
+            return false;
+        pasteLock.current = now;
+        const text = event?.clipboardData?.getData?.("text/plain") || await readClipboard();
+        const matrix = parseGridClipboard(text);
+        if (!matrix.length)
+            return false;
+        const origin = pasteOrigin(selection, selectedCell, selectionCtx);
+        const result = applyGridPaste(model, origin, matrix, clipboardCtx());
+        if (!result)
+            return false;
+        setEditing(null);
+        bumpPendingChanges();
+        setSelectedCell(annotateCell(cellFromPoint(result.origin)));
+        setSelection(result.selection);
+        return true;
+    };
+
     const toolbarAction = (id) => {
         if (id === "refresh")
             return refreshData();
@@ -334,14 +370,10 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
         if (id === "export")
             return setExportOpen(true);
         if (id === "delete-row" && !mutationLocked && selectionIsCurrent) {
-            if (selectedCell.kind === "insert") {
-                changes.removeInsert(selectedCell.insertId);
-                if (editing?.kind === "insert" && editing.insertId === selectedCell.insertId)
-                    setEditing(null);
-            }
-            else {
-                changes.toggleDelete(page.keyValuesFor(selectedCell.row));
-            }
+            if (!applyDeleteSelection(model, selection, selectionCtx))
+                return;
+            if (editing?.kind === "insert" && !model.inserts.some((entry) => entry.id === editing.insertId))
+                setEditing(null);
             bumpPendingChanges();
             return setSelectedCell(null);
         }
@@ -374,15 +406,9 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
             });
             if (!isCurrentDataExport(session, operation))
                 return;
-            if (exported.capped) {
-                setTransferProgress({ kind: "export", status: "done", label: "Export reached 1,000,000 rows", percent: 100 });
-                toast("Export may be incomplete: reached 1,000,000 rows", "warning");
-            }
-            else {
-                const label = `Exported ${exported.rowCount} rows`;
-                setTransferProgress({ kind: "export", status: "done", label, percent: 100 });
-                toast(label, "success");
-            }
+            const label = `Exported ${exported.rowCount} rows`;
+            setTransferProgress({ kind: "export", status: "done", label, percent: 100 });
+            toast(label, "success");
         } catch (error) {
             if (isCurrentDataExport(session, operation)) {
                 setTransferProgress({ kind: "export", status: "error", label: "Export failed", percent: 100 });
@@ -467,6 +493,8 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
                     onSelectCell={selectGridCell}
                     onClearSelection={() => setSelection(EMPTY_SELECTION)}
                     onRevertSelected={revertSelected}
+                    onCopySelection={copySelection}
+                    onPasteSelection={pasteSelection}
                     canRevert={hasRevertTarget && !mutationLocked}
                     scrollTarget={scrollTarget}
                     sortDirections={sortDirections}
@@ -488,7 +516,6 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
                     onCount={async () => {
                         const snapshot = coordinator.initiateDataCount(workspaceId, gridState);
                         if (snapshot.error) {
-                            setStatus("Count failed");
                             toast(snapshot.error, "warning");
                             return;
                         }
@@ -503,7 +530,6 @@ export function DataView({ session, tableRef, workspaceId, setStatus }) {
                         }
                         catch (error) {
                             if (isCurrentDataCount(session, snapshot)) {
-                                setStatus("Count failed");
                                 toast(error.message, "warning");
                             }
                         }

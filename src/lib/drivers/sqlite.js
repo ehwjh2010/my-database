@@ -1,5 +1,6 @@
 import { run, runWithStdinFile } from "../exec.js";
 import { writeDumpPart } from "../secure-file.js";
+import { ensureDropBeforeCreate } from "../sql/dump-sql.js";
 import { detect as detectBinary } from "../cli-detect.js";
 import { quoteIdent, quoteLiteral } from "../sql/quote.js";
 import { makeResult, fromObjects, parseJsonStream } from "../parse/result.js";
@@ -121,7 +122,8 @@ export const sqlite = {
     async dumpDatabase(ctx, outPath, opts = {}) {
         if (opts.table) {
             const sql = await run([BIN, ctx.conn.sqlite.path, `.dump ${opts.table}`], { timeoutMs: opts.timeoutMs || 600000 });
-            await writeDumpPart(outPath, sql.endsWith("\n") ? sql : `${sql}\n`, Boolean(opts.append));
+            const dump = ensureDropBeforeCreate(sql);
+            await writeDumpPart(outPath, dump.endsWith("\n") ? dump : `${dump}\n`, Boolean(opts.append));
             return;
         }
         const phaseArgv = (extra) => [BIN, ctx.conn.sqlite.path, ...extra];
@@ -131,17 +133,14 @@ export const sqlite = {
             phaseArgv([".sql", "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY rowid"]),
         ];
         let append = Boolean(opts.append);
-        for (const argv of phases) {
+        for (const [index, argv] of phases.entries()) {
             const sql = await run(argv, { timeoutMs: opts.timeoutMs || 600000 });
             if (!sql)
                 continue;
-            await writeDumpPart(outPath, sql.endsWith("\n") ? sql : `${sql}\n`, append);
+            const dump = index === 0 ? ensureDropBeforeCreate(sql) : sql;
+            await writeDumpPart(outPath, dump.endsWith("\n") ? dump : `${dump}\n`, append);
             append = true;
         }
-    },
-
-    async clearDatabase(ctx, opts = {}) {
-        await run([BIN, "-batch", databaseUri(ctx.conn.sqlite.path), "PRAGMA foreign_keys = OFF; DROP SCHEMA main CASCADE;"], opts);
     },
 
     async clearDatabase(ctx, opts = {}) {
@@ -156,10 +155,6 @@ export const sqlite = {
 
     async importDatabase(ctx, dumpPath, opts = {}) {
         await runWithStdinFile(["sqlite3", "-bail", "-batch", databaseUri(ctx.conn.sqlite.path)], dumpPath, { timeoutMs: opts.timeoutMs || 600000 });
-    },
-
-    async runBatch(ctx, sql, opts = {}) {
-        await run([BIN, "-batch", ctx.conn.sqlite.path, sql], opts);
     },
 
     async runBatch(ctx, sql, opts = {}) {

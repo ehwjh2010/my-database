@@ -1,4 +1,4 @@
-import { getEdit, rowHasPending, revertCell, revertInsertCell, revertRow, removeInsert, clearChanges } from "./pending-changes.js";
+import { getEdit, isDeleted, rowHasPending, revertCell, revertInsertCell, revertRow, removeInsert, clearChanges, toggleDelete } from "./pending-changes.js";
 
 export const EMPTY_SELECTION = { kind: "none" };
 
@@ -175,6 +175,40 @@ export function isRowInSelection(selection, key, ctx) {
     return row >= Math.min(start, end) && row <= Math.max(start, end) && startColumn === 0 && endColumn === ctx.columnCount - 1;
 }
 
+export function isFocusedPoint(selectedCell, point) {
+    const focused = pointFromCell(selectedCell);
+    return Boolean(focused && pointsEqual(focused, point));
+}
+
+export function isCurrentRowKey(selectedCell, key) {
+    const focused = pointFromCell(selectedCell);
+    return Boolean(focused && rowKeysEqual(rowKeyFromPoint(focused), key));
+}
+
+export function paintsCellSelection(selection, point, ctx) {
+    if (!selection || selection.kind === "none" || selection.kind === "rows")
+        return false;
+    if (isRowInSelection(selection, rowKeyFromPoint(point), ctx))
+        return false;
+    return isCellInSelection(selection, point, ctx);
+}
+
+export function rowHighlightClass(selection, key, ctx, selectedCell, extras = []) {
+    return [
+        ...extras,
+        isCurrentRowKey(selectedCell, key) ? "row-current" : "",
+        isRowInSelection(selection, key, ctx) ? "row-selected" : "",
+    ].filter(Boolean).join(" ") || undefined;
+}
+
+export function cellHighlightClass(selection, point, ctx, selectedCell, extras = []) {
+    return [
+        ...extras,
+        paintsCellSelection(selection, point, ctx) ? "cell-selected" : "",
+        selection?.kind !== "rows" && isFocusedPoint(selectedCell, point) ? "cell-focused" : "",
+    ].filter(Boolean).join(" ") || undefined;
+}
+
 export function isCellInSelection(selection, point, ctx) {
     if (!selection || selection.kind === "none")
         return false;
@@ -216,6 +250,41 @@ export function selectionHasPending(selection, changes, ctx) {
     if (targets.rows)
         return targets.rows.some((key) => rowTargetHasPending(changes, key, ctx));
     return targets.cells.some((cell) => cellHasPending(changes, cell, ctx));
+}
+
+export function selectionRowKeys(selection, ctx) {
+    const targets = selectionTargets(selection, ctx);
+    if (targets.all)
+        return [];
+    if (targets.rows)
+        return [...targets.rows];
+    const keys = [];
+    for (const cell of targets.cells) {
+        const key = rowKeyFromPoint(cell);
+        if (!keys.some((item) => rowKeysEqual(item, key)))
+            keys.push(key);
+    }
+    return keys;
+}
+
+export function applyDeleteSelection(changes, selection, ctx) {
+    const keys = selectionRowKeys(selection, ctx);
+    let changed = false;
+    for (const key of keys) {
+        if (key.type === "insert") {
+            if (changes.inserts.some((entry) => entry.id === key.insertId)) {
+                removeInsert(changes, key.insertId);
+                changed = true;
+            }
+            continue;
+        }
+        const keyValues = ctx.keyValuesFor(key.row);
+        if (isDeleted(changes, keyValues))
+            continue;
+        toggleDelete(changes, keyValues);
+        changed = true;
+    }
+    return changed;
 }
 
 export function applyRevertSelection(changes, selection, ctx) {
