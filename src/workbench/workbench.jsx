@@ -12,7 +12,7 @@ import { StructureView } from "../structure/structure-view.jsx";
 import { DatabaseExportModal, DatabaseImportModal } from "../transfer/transfer-menu.jsx";
 import { WorkspaceTabs } from "./workspace-tabs.jsx";
 import { objectCacheKey } from "./workspace-state.js";
-import { flattenSessionTabs, parseTabStripKey, sqlFileMenuItems } from "./workspace-chrome.js";
+import { flattenSessionTabs, parseTabStripKey, sqlFileMenuItems, workspaceTabContextItems } from "./workspace-chrome.js";
 import { dumpDatabase, restoreDatabase } from "../transfer/transfer.js";
 import { TransferProgressModal } from "../transfer/transfer-progress-modal.jsx";
 import { toast } from "../ui/toast.js";
@@ -117,8 +117,15 @@ export function Workbench() {
 
     const closeSqlFile = (tab) => {
         const result = closeSql(tab.id);
+        if (result?.then)
+            return result.then((next) => {
+                if (next?.error)
+                    toast(fileErrorMessage(next), "error");
+                return next;
+            });
         if (result?.error)
             toast(fileErrorMessage(result), "error");
+        return result;
     };
 
     useEffect(() => {
@@ -141,13 +148,11 @@ export function Workbench() {
             return [];
         const tab = { id };
         if (entry.reserved || entry.name?.toLowerCase() === "console.sql")
-            return [{ label: "Close", onClick: () => closeSqlFile(tab) }];
+            return [];
         return [
             { label: "Rename...", onClick: () => openRenameFile(tab) },
             { separator: true },
             { label: "Delete", onClick: () => trashFile(tab) },
-            { separator: true },
-            { label: "Close", onClick: () => closeSqlFile(tab) },
         ];
     };
     const strip = flattenSessionTabs({ tabOrder: session.tabOrder, registry: session.registry, sqlRegistry: session.sqlRegistry, surface });
@@ -161,17 +166,28 @@ export function Workbench() {
     const closeStrip = (key) => {
         const tab = parseTabStripKey(key);
         if (tab?.kind === "sql")
-            closeSqlFile({ id: tab.id });
-        else if (tab?.kind === "object")
-            closeWorkspace(tab.id);
+            return closeSqlFile({ id: tab.id });
+        if (tab?.kind === "object")
+            return closeWorkspace(tab.id);
+    };
+    const closeOthersStrip = async (keepKey) => {
+        for (const key of strip.order.filter((id) => id !== keepKey))
+            await closeStrip(key);
     };
     const tabMenuItems = (tab) => {
         const parsed = parseTabStripKey(tab.id);
-        if (parsed?.kind === "sql")
-            return sqlTabMenuItems(parsed.id);
-        if (parsed?.kind === "object")
-            return objectTabMenuItems(parsed.id);
-        return [];
+        const extraItems = parsed?.kind === "sql"
+            ? sqlTabMenuItems(parsed.id)
+            : parsed?.kind === "object"
+                ? objectTabMenuItems(parsed.id)
+                : [];
+        return workspaceTabContextItems({
+            tabId: tab.id,
+            order: strip.order,
+            onClose: closeStrip,
+            onCloseOthers: closeOthersStrip,
+            extraItems,
+        });
     };
 
     useEffect(() => {

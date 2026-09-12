@@ -32,6 +32,16 @@ export function WorkspaceTabs({ order = [], activeId, byId = {}, changesByKey, o
                         tabIndex={0}
                         title={tab.title}
                         onClick={() => onActivate(tab.id)}
+                        onAuxClick={(event) => {
+                            if (event.button !== 1)
+                                return;
+                            event.preventDefault();
+                            closeWorkspaceTabIntent(event, tab.id, onClose);
+                        }}
+                        onMouseDown={(event) => {
+                            if (event.button === 1)
+                                event.preventDefault();
+                        }}
                         onContextMenu={(event) => openTabMenu(event, tab)}
                         onKeyDown={(event) => {
                             if (event.target !== event.currentTarget)

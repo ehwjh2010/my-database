@@ -1700,8 +1700,7 @@ textarea:focus {
   gap: var(--s1);
   min-width: 0;
   padding-left: var(--s3);
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: hidden;
   white-space: nowrap;
 }
 
@@ -1742,11 +1741,12 @@ textarea:focus {
   display: inline-flex;
   align-items: center;
   gap: var(--s2);
-  min-width: 120px;
-  max-width: 220px;
+  min-width: 72px;
+  max-width: 100%;
+  width: max-content;
   height: var(--input-height);
   align-self: end;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   padding: 0 var(--s3);
   border: 1px solid var(--muxy-border);
   border-bottom: none;
@@ -1778,6 +1778,7 @@ textarea:focus {
 
 .workspace-tab-name {
   min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -1808,7 +1809,6 @@ textarea:focus {
   background: transparent;
   width: var(--icon);
   height: var(--icon);
-  margin-left: auto;
   color: var(--muxy-foreground-muted);
   border-radius: var(--radius-sm);
 }

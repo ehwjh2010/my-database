@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { closeWorkspaceTabIntent, flattenSessionTabs, parseTabStripKey, projectWorkspaceTabs, sqlFileMenuItems, workspaceSwitchMenuItems, workspaceTabTitle } from "../src/workbench/workspace-chrome.js";
+import { closeWorkspaceTabIntent, flattenSessionTabs, parseTabStripKey, projectWorkspaceTabs, sqlFileMenuItems, workspaceSwitchMenuItems, workspaceTabContextItems, workspaceTabTitle } from "../src/workbench/workspace-chrome.js";
 
 function makeRegistry() {
     return {
@@ -201,4 +201,31 @@ test("closeWorkspaceTabIntent stops propagation before closing and never activat
 
     assert.deepEqual(calls, ["stopPropagation", "close:7"]);
     assert.equal(closeWorkspaceTabIntent.length <= 3, true, "close intent has no activate callback");
+});
+
+test("workspaceTabContextItems always offers Close and Close Others when other tabs exist", () => {
+    const closed = [];
+    const items = workspaceTabContextItems({
+        tabId: "object:2",
+        order: ["sql:1", "object:2", "object:3"],
+        onClose: (id) => closed.push(`close:${id}`),
+        onCloseOthers: (id) => closed.push(`others:${id}`),
+        extraItems: [{ label: "Copy Table Name", onClick: () => closed.push("copy") }],
+    });
+
+    assert.deepEqual(items.map((item) => item.label || "separator"), ["Close", "Close Others", "separator", "Copy Table Name"]);
+    items[0].onClick();
+    items[1].onClick();
+    assert.deepEqual(closed, ["close:object:2", "others:object:2"]);
+});
+
+test("workspaceTabContextItems omits Close Others for a single tab", () => {
+    const items = workspaceTabContextItems({
+        tabId: "sql:4",
+        order: ["sql:4"],
+        onClose: () => {},
+        extraItems: [],
+    });
+
+    assert.deepEqual(items.map((item) => item.label), ["Close"]);
 });

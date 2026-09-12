@@ -77,6 +77,15 @@ export function sqlFileMenuItems({ files = [], onCreate, onOpen } = {}) {
     ];
 }
 
+export function workspaceTabContextItems({ tabId, order = [], onClose, onCloseOthers, extraItems = [] }) {
+    const items = [{ label: "Close", onClick: () => onClose?.(tabId) }];
+    if (order.some((id) => id !== tabId))
+        items.push({ label: "Close Others", onClick: () => onCloseOthers?.(tabId) });
+    if (!extraItems.length)
+        return items;
+    return [...items, { separator: true }, ...extraItems];
+}
+
 export function closeWorkspaceTabIntent(event, workspaceId, onClose) {
     event?.stopPropagation?.();
     onClose(workspaceId);
