@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Modal } from "../ui/modal.jsx";
 import { Icon } from "../ui/icon.jsx";
+import { ClearableInput } from "../ui/clearable-input.jsx";
 import { dumpDatabase, restoreDatabase } from "./transfer.js";
 
 function MenuItem({ icon, label, onSelect }) {
@@ -28,12 +29,7 @@ function ObjectPicker({ objects, selected, filter, setFilter, setSelected }) {
     return (
         <>
             <div className="flex items-center gap-[var(--s2)]">
-                <input type="text" placeholder="Filter tables" className="min-w-0 flex-1" value={filter} onChange={(event) => setFilter(event.target.value)} />
-                {filter ? (
-                    <button type="button" className="icon-btn" title="Clear filter" aria-label="Clear filter" onClick={() => setFilter("")}>
-                        <Icon name="x" />
-                    </button>
-                ) : null}
+                <ClearableInput placeholder="Filter tables" className="min-w-0 flex-1" value={filter} onChange={setFilter} />
             </div>
             <div className="flex items-center gap-[var(--s3)]">
                 <button type="button" className="btn btn-compact" onClick={() => setSelected(new Set(objects.map((table) => table.name)))}>All</button>

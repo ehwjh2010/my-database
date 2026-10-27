@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../ui/icon.jsx";
+import { ClearableInput } from "../ui/clearable-input.jsx";
 import { ContextMenu } from "../ui/context-menu.jsx";
 import { useSession } from "./session-context.jsx";
 import { objectCacheKey } from "./workspace-state.js";
@@ -256,12 +257,7 @@ export function Sidebar({ onExportDatabase, onImportDatabase, dumpProgress }) {
             <div className="search-bar-shell">
                 <div className="search-bar" style={{ borderColor: "var(--muxy-border)" }}>
                     <div className="search-bar-field">
-                        <input type="text" placeholder="Filter tables" className="search-bar-input" value={filter} onChange={(event) => setFilter(event.target.value)} />
-                        {filter ? (
-                            <button type="button" className="icon-btn" title="Clear filter" aria-label="Clear filter" onClick={() => setFilter("")}>
-                                <Icon name="x" />
-                            </button>
-                        ) : null}
+                        <ClearableInput placeholder="Filter tables" className="search-bar-input" value={filter} onChange={setFilter} />
                     </div>
                     {onImportDatabase ? (
                         <button

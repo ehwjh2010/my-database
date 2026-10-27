@@ -1,16 +1,30 @@
 import { useRef, useState } from "react";
 import { FieldInput } from "./field-input.jsx";
+import { ColumnSelect } from "./column-select.jsx";
 
 const MIN_WIDTH = 120;
 const SEPARATOR_WIDTH = 9;
 
 function clampRatio(element, value) {
-    const available = Math.max(1, element.clientWidth - SEPARATOR_WIDTH);
+    const columnsPane = element.firstElementChild?.getBoundingClientRect().width || 0;
+    const available = Math.max(1, element.clientWidth - columnsPane - SEPARATOR_WIDTH * 2);
     const minimum = Math.min(50, MIN_WIDTH / available * 100);
     return Math.max(minimum, Math.min(100 - minimum, value));
 }
 
-export function FilterBar({ rawWhere, rawOrderBy, columns, engine, initialRatio, onWhereChange, onOrderByChange, onApply, onRatioChange }) {
+export function FilterBar({
+    rawWhere,
+    rawOrderBy,
+    columns,
+    visibleColumns,
+    engine,
+    initialRatio,
+    onWhereChange,
+    onOrderByChange,
+    onVisibleColumnsChange,
+    onApply,
+    onRatioChange,
+}) {
     const bar = useRef(null);
     const dragging = useRef(false);
     const ratioValue = useRef(initialRatio);
@@ -24,8 +38,10 @@ export function FilterBar({ rawWhere, rawOrderBy, columns, engine, initialRatio,
     };
     const resize = (clientX) => {
         const bounds = bar.current.getBoundingClientRect();
-        const available = bounds.width - SEPARATOR_WIDTH;
-        updateRatio((clientX - bounds.left - SEPARATOR_WIDTH / 2) / available * 100);
+        const columnsPane = bar.current.firstElementChild.getBoundingClientRect().width;
+        const start = columnsPane + SEPARATOR_WIDTH;
+        const available = Math.max(1, bounds.width - start - SEPARATOR_WIDTH);
+        updateRatio((clientX - bounds.left - start - SEPARATOR_WIDTH / 2) / available * 100);
     };
     const finishResize = (event) => {
         if (!dragging.current)
@@ -41,8 +57,10 @@ export function FilterBar({ rawWhere, rawOrderBy, columns, engine, initialRatio,
         <div
             ref={bar}
             className="search-bar data-query-bar"
-            style={{ gridTemplateColumns: `minmax(${MIN_WIDTH}px, ${ratio}fr) ${SEPARATOR_WIDTH}px minmax(${MIN_WIDTH}px, ${100 - ratio}fr)` }}
+            style={{ gridTemplateColumns: `minmax(168px, 0.9fr) ${SEPARATOR_WIDTH}px minmax(${MIN_WIDTH}px, ${ratio}fr) ${SEPARATOR_WIDTH}px minmax(${MIN_WIDTH}px, ${100 - ratio}fr)` }}
         >
+            <ColumnSelect columns={columns} value={visibleColumns} onChange={onVisibleColumnsChange} />
+            <div className="query-separator query-separator-static" aria-hidden="true" />
             <FieldInput
                 label="WHERE"
                 value={rawWhere}

@@ -45,10 +45,13 @@ muxy.events.subscribe(`extension.${EXT}.open-connection`, async (payload) => {
     const connectionId = payload?.connectionId;
     if (!connectionId)
         return;
+    const database = payload?.database || "";
     const existing = tabsByConnection.get(connectionId);
     if (existing) {
         try {
             await muxy.tabs.switchTo(existing);
+            if (database)
+                await muxy.events.emit(`extension.${EXT}.use-database`, { connectionId, database });
             return;
         }
         catch {
@@ -58,7 +61,7 @@ muxy.events.subscribe(`extension.${EXT}.open-connection`, async (payload) => {
     try {
         const tabID = await muxy.tabs.open({
             kind: "extensionWebView",
-            extension: { id: muxy.extensionID, tabType: "workbench", data: { connectionId } },
+            extension: { id: muxy.extensionID, tabType: "workbench", data: { connectionId, database } },
         });
         if (tabID)
             tabsByConnection.set(connectionId, tabID);

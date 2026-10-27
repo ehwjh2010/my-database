@@ -3,8 +3,10 @@ import { EmptyState } from "../ui/empty-state.jsx";
 import { Icon } from "../ui/icon.jsx";
 import { toast } from "../ui/toast.js";
 import { ENGINES, listConnections } from "../lib/connections.js";
+import { getDriver } from "../lib/drivers/index.js";
 import { connectionTarget, quickConnect, engineAvailability } from "./actions.js";
 import { ConnectionCard } from "./connection-card.jsx";
+import { DatabasePicker } from "./database-picker.jsx";
 import { ImportRow } from "./import-row.jsx";
 import { ConnectionFormModal } from "./connection-form.jsx";
 
@@ -48,6 +50,7 @@ export function ConnectionsScreen({ variant = "tab", onOpen }) {
     const [connections, setConnections] = useState([]);
     const [query, setQuery] = useState("");
     const [editing, setEditing] = useState(undefined);
+    const [picking, setPicking] = useState(null);
 
     const load = useCallback(() => {
         listConnections().then(setConnections);
@@ -55,11 +58,34 @@ export function ConnectionsScreen({ variant = "tab", onOpen }) {
 
     useEffect(() => { load(); }, [load]);
 
+    const requestOpen = useCallback((conn) => {
+        if (!getDriver(conn.engine).capabilities.databases) {
+            onOpen(conn);
+            return;
+        }
+        setPicking(conn);
+    }, [onOpen]);
+
     const term = query.trim().toLowerCase();
     const filtered = connections.filter(
         (c) => !term || c.name.toLowerCase().includes(term) || connectionTarget(c).toLowerCase().includes(term) || (c.group || "").toLowerCase().includes(term),
     );
     const hasSsh = connections.some((c) => c.ssh?.enabled);
+
+    if (picking) {
+        return (
+            <DatabasePicker
+                conn={picking}
+                panel={panel}
+                onBack={() => setPicking(null)}
+                onSelect={(database) => {
+                    const conn = picking;
+                    setPicking(null);
+                    onOpen(conn, database);
+                }}
+            />
+        );
+    }
 
     const closeAllTunnels = async () => {
         const { sweepTunnels } = await import("../lib/tunnel.js");
@@ -88,7 +114,7 @@ export function ConnectionsScreen({ variant = "tab", onOpen }) {
             <div className="flex-1" />
             <input type="text" placeholder="Search" className="w-56" value={query} onChange={(e) => setQuery(e.target.value)} />
             {connections.length > 1 ? (
-                <button className="btn btn-compact" title="Quick connect" onClick={() => quickConnect(onOpen)}>
+                <button className="btn btn-compact" title="Quick connect" onClick={() => quickConnect(requestOpen)}>
                     <Icon name="bolt" />
                     Quick connect
                 </button>
@@ -132,7 +158,7 @@ export function ConnectionsScreen({ variant = "tab", onOpen }) {
                                 {group ? <div className={`section-label mb-[var(--s3)] mt-[var(--s5)] ${panel ? "px-[var(--s5)]" : ""}`}>{group}</div> : null}
                                 <div className={`flex flex-col ${panel ? "" : "gap-[var(--s3)]"}`}>
                                     {conns.map((conn) => (
-                                        <ConnectionCard key={conn.id} conn={conn} panel={panel} onOpen={onOpen} onEdit={setEditing} onChanged={load} />
+                                        <ConnectionCard key={conn.id} conn={conn} panel={panel} onOpen={requestOpen} onEdit={setEditing} onChanged={load} />
                                     ))}
                                 </div>
                             </div>

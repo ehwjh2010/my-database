@@ -14,7 +14,7 @@ function Root() {
     return (
         <ConnectionsScreen
             variant="panel"
-            onOpen={(conn) => muxy.events.emit(`extension.${EXT}.open-connection`, { connectionId: conn.id }).then(() => muxy.panels.close("connections")).catch(() => undefined)}
+            onOpen={(conn, database) => muxy.events.emit(`extension.${EXT}.open-connection`, { connectionId: conn.id, database: database || "" }).then(() => muxy.panels.close("connections")).catch(() => undefined)}
         />
     );
 }

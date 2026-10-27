@@ -36,7 +36,7 @@ test("data runtime keeps independent cache, grid, changes, and request identity 
 
 test("createDataRuntime starts with non-persistent empty Data state", () => {
     const runtime = createDataRuntime(null, 0, 7);
-    assert.deepEqual(runtime.gridState, { page: 0, rawWhere: "", rawOrderBy: "", total: null, querySplit: 50 });
+    assert.deepEqual(runtime.gridState, { page: 0, rawWhere: "", rawOrderBy: "", visibleColumns: null, total: null, querySplit: 50 });
     assert.deepEqual(runtime.cache, null);
     assert.deepEqual([...runtime.changes.edits], []);
     assert.deepEqual([...runtime.changes.deletes], []);

@@ -29,6 +29,7 @@ test("MySQL and PostgreSQL tableInfo preserve catalog metadata and ordered keys"
             return { exitCode: 0, stdout: "/usr/bin/mysql\n", stderr: "" };
         if (argv[0] === "perl")
             return { exitCode: 0, stdout: "", stderr: "" };
+        assert.equal(argv.includes("--default-character-set=utf8mb4"), true);
         const sql = argv[argv.indexOf("-e") + 1];
         mysqlSql.push(sql);
         if (sql.includes("information_schema.STATISTICS"))

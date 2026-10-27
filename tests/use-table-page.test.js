@@ -98,6 +98,7 @@ test("cached page requires matching grid revision and current request identity",
 
     assert.deepEqual(cachedPageFor(runtime, { ...gridState }, 2, 1, 4, runtime.generation, runtime.token), runtime.cache);
     assert.deepEqual(cachedPageFor(runtime, { ...gridState, total: 10, querySplit: 70 }, 2, 1, 4, runtime.generation, runtime.token), runtime.cache);
+    assert.deepEqual(cachedPageFor(runtime, { ...gridState, visibleColumns: ["id"] }, 2, 1, 4, runtime.generation, runtime.token), runtime.cache);
     assert.equal(cachedPageFor(runtime, { ...gridState, page: 1 }, 2, 1, 4, runtime.generation, runtime.token), null);
     assert.equal(cachedPageFor(runtime, { ...gridState, pageSize: 50 }, 2, 1, 4, runtime.generation, runtime.token), null);
     assert.equal(cachedPageFor(runtime, { ...gridState, rawOrderBy: "id ASC" }, 2, 1, 4, runtime.generation, runtime.token), null);

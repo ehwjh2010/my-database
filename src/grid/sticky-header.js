@@ -18,10 +18,25 @@ export function sameWidths(left, right) {
     return !!left && !!right && left.length === right.length && left.every((width, index) => width === right[index]);
 }
 
+export const GRID_GUTTER_WIDTH = 40;
+
 export function frozenTableStyle(widths) {
     if (!widths?.length)
         return undefined;
-    return { tableLayout: "fixed", width: widths.reduce((sum, width) => sum + width, 0) };
+    const width = widths.reduce((sum, value) => sum + value, 0);
+    return { tableLayout: "fixed", width, minWidth: width };
+}
+
+export function alignFrozenWidths(widths, columnCount) {
+    return widths?.length === columnCount ? widths : null;
+}
+
+export function pinGutterWidth(widths, hasGutter) {
+    if (!hasGutter || !widths?.length)
+        return widths;
+    if (widths[0] === GRID_GUTTER_WIDTH)
+        return widths;
+    return [GRID_GUTTER_WIDTH, ...widths.slice(1)];
 }
 
 export function useFrozenColumnWidths(headTableRef, bodyTableRef, extraDeps = []) {

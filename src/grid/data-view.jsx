@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Icon } from "../ui/icon.jsx";
 import { toast } from "../ui/toast.js";
 import { buildCount } from "../lib/sql/select-builder.js";
@@ -12,6 +12,7 @@ import { applyDeleteSelection, applyRevertSelection, cellFromPoint, EMPTY_SELECT
 import { useTablePage } from "./use-table-page.js";
 import { DataGrid } from "./data-grid.jsx";
 import { FilterBar } from "./filter-bar.jsx";
+import { ensureVisibleColumn, projectVisibleGrid } from "./column-visibility.js";
 import { Pager } from "./pager.jsx";
 import { resolvePageSize } from "./page-size.js";
 import { nextOrderBy, parseOrderBy } from "./order-by.js";
@@ -72,11 +73,17 @@ export function DataView({ session, tableRef, workspaceId }) {
 
     const page = useTablePage(session, tableRef, gridState, activeWorkspaceKey, runtime.dataRevision, workspaceId);
     const pageSize = resolvePageSize(gridState, session);
+    const sourceColumns = page.displayColumns || [];
+    const sourceRows = page.displayRows || [];
+    const view = useMemo(
+        () => projectVisibleGrid(sourceColumns, sourceRows, gridState.visibleColumns),
+        [sourceColumns, sourceRows, gridState.visibleColumns],
+    );
     const insertIds = (page.changes?.inserts || []).map((insert) => insert.id);
     const selectionCtx = {
-        columns: page.displayColumns || [],
-        columnCount: page.displayColumns?.length || 0,
-        rowCount: page.displayRows?.length || 0,
+        columns: view.columns,
+        columnCount: view.columns.length,
+        rowCount: view.rows.length,
         insertIds,
         keyValuesFor: page.keyValuesFor,
         pendingCount: page.changes ? changeCount(page.changes) : 0,
@@ -110,7 +117,8 @@ export function DataView({ session, tableRef, workspaceId }) {
     useEffect(() => {
         setSelectedCell(null);
         setSelection(EMPTY_SELECTION);
-    }, [activeWorkspaceKey, runtime.dataRevision, gridState.page, gridState.rawWhere, gridState.rawOrderBy, pageSize]);
+        setEditing(null);
+    }, [activeWorkspaceKey, runtime.dataRevision, gridState.page, gridState.rawWhere, gridState.rawOrderBy, gridState.visibleColumns, pageSize]);
 
     useEffect(() => {
         setTransferProgress(null);
@@ -122,9 +130,13 @@ export function DataView({ session, tableRef, workspaceId }) {
         setSelectedCell(null);
         setSelection(EMPTY_SELECTION);
         if (!page.error) {
-            const column = page.displayColumns.findIndex((entry) => entry.name === columnFocus.columnName);
+            const column = view.columns.findIndex((entry) => entry.name === columnFocus.columnName);
+            if (column < 0 && sourceColumns.some((entry) => entry.name === columnFocus.columnName)) {
+                commitGrid({ visibleColumns: ensureVisibleColumn(sourceColumns, gridState.visibleColumns, columnFocus.columnName) });
+                return;
+            }
             if (column >= 0) {
-                const row = page.displayRows.length ? 0 : null;
+                const row = view.rows.length ? 0 : null;
                 if (row !== null) {
                     const cell = { row, column, kind: "row", workspaceId, objectKey: activeWorkspaceKey, dataRevision: runtime.dataRevision, keyValues: page.keyValuesFor(row) };
                     setSelectedCell(cell);
@@ -134,7 +146,7 @@ export function DataView({ session, tableRef, workspaceId }) {
             }
         }
         consumeColumnFocus(columnFocus.token);
-    }, [columnFocus, consumeColumnFocus, page, workspaceId]);
+    }, [columnFocus, consumeColumnFocus, page, sourceColumns, workspaceId, gridState.visibleColumns]);
 
     const commitGrid = (patch) => {
         const next = { ...session.gridState.get(activeWorkspaceKey), ...gridState, ...patch };
@@ -146,11 +158,13 @@ export function DataView({ session, tableRef, workspaceId }) {
         <FilterBar
             rawWhere={draftWhere}
             rawOrderBy={draftOrderBy}
-            columns={page.loading || page.error ? [] : page.displayColumns}
+            columns={page.loading || page.error ? [] : sourceColumns}
+            visibleColumns={gridState.visibleColumns}
             engine={session.conn.engine}
             initialRatio={gridState.querySplit}
             onWhereChange={setDraftWhere}
             onOrderByChange={setDraftOrderBy}
+            onVisibleColumnsChange={(visibleColumns) => commitGrid({ visibleColumns })}
             onApply={() => commitGrid({ rawWhere: draftWhere, rawOrderBy: draftOrderBy, page: 0, total: null })}
             onRatioChange={(querySplit) => session.gridState.set(activeWorkspaceKey, {
                 ...session.gridState.get(activeWorkspaceKey),
@@ -309,11 +323,12 @@ export function DataView({ session, tableRef, workspaceId }) {
         }
     };
 
+    const gridPage = { ...page, displayColumns: view.columns, displayRows: view.rows };
     const clipboardCtx = () => ({
         ...selectionCtx,
-        columns: page.displayColumns,
-        displayRows: page.displayRows,
-        valueAt: (point) => gridCellValue(page, model, point),
+        columns: view.columns,
+        displayRows: view.rows,
+        valueAt: (point) => gridCellValue(gridPage, model, point),
     });
 
     const copySelection = (event) => {
@@ -459,7 +474,7 @@ export function DataView({ session, tableRef, workspaceId }) {
     };
 
     const readOnlyBanner = !page.editable && tableRef.kind !== "view";
-    const sortDirections = parseOrderBy(session.conn.engine, gridState.rawOrderBy, page.displayColumns);
+    const sortDirections = parseOrderBy(session.conn.engine, gridState.rawOrderBy, view.columns);
 
     return (
         <div className="flex min-h-0 flex-1 flex-col">
@@ -476,7 +491,7 @@ export function DataView({ session, tableRef, workspaceId }) {
             ) : null}
             <div className="flex min-h-0 flex-1 flex-col">
                 <DataGrid
-                    page={page}
+                    page={gridPage}
                     pageIndex={gridState.page}
                     pageSize={pageSize}
                     changes={changes}

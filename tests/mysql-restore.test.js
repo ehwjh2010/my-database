@@ -5,6 +5,7 @@ import { appendFileSync, mkdtempSync, openSync, readFileSync, writeFileSync, rmS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resetDetection } from "../src/lib/cli-detect.js";
+import { resetMysqlDumpFlags } from "../src/lib/mysql-dump-flags.js";
 
 const calls = [];
 let sourcedSql = "";
@@ -30,6 +31,13 @@ globalThis.muxy = {
             }
         }
         if (argv[0] === "mysqldump") {
+            if (argv.includes("--help")) {
+                return {
+                    exitCode: 0,
+                    stdout: "  --dump-masking-policies\n  --column-statistics\n  --no-tablespaces\n",
+                    stderr: "",
+                };
+            }
             const resultFile = argv.find((arg) => arg.startsWith("--result-file="));
             const tables = argv.slice(10).filter((arg) => !arg.startsWith("--") && !/^\d+$/.test(arg));
             if (resultFile) {
@@ -50,13 +58,18 @@ const ctx = {
 
 test("mysql dump omits GTID purged metadata and dumps in three phases", async () => {
     resetDetection();
+    resetMysqlDumpFlags();
     calls.length = 0;
     await mysql.dumpDatabase(ctx, "/tmp/muxy-mysql-dump-test.sql");
-    const dumps = calls.filter((argv) => argv[0] === "mysqldump");
+    const dumps = calls.filter((argv) => argv[0] === "mysqldump" && argv.some((arg) => arg.startsWith("--result-file=")));
     assert.ok(dumps.length >= 3, `expected 3 phased dumps, got ${dumps.length}`);
     for (const dump of dumps) {
         assert.ok(dump.includes("--set-gtid-purged=OFF"));
         assert.ok(dump.includes("--single-transaction"));
+        assert.ok(dump.includes("--default-character-set=utf8mb4"));
+        assert.ok(dump.includes("--skip-dump-masking-policies"));
+        assert.ok(dump.includes("--column-statistics=0"));
+        assert.ok(dump.includes("--no-tablespaces"));
     }
     assert.ok(dumps[0].includes("--no-data"));
     assert.ok(dumps[0].includes("--routines"));
@@ -73,11 +86,16 @@ test("mysql dump omits GTID purged metadata and dumps in three phases", async ()
 
 test("mysql per-table dump appends to the file instead of overwriting", async () => {
     resetDetection();
+    resetMysqlDumpFlags();
     calls.length = 0;
     const dumpPath = join(mkdtempSync(join(tmpdir(), "mysql-table-dump-")), "db.sql");
     await mysql.dumpDatabase(ctx, dumpPath, { table: "authors" });
     await mysql.dumpDatabase(ctx, dumpPath, { table: "books", append: true });
     await mysql.dumpDatabase(ctx, dumpPath, { table: "orders", append: true });
+    const dumps = calls.filter((argv) => argv[0] === "mysqldump" && argv.some((arg) => arg.startsWith("--result-file=")));
+    assert.equal(dumps.length, 3);
+    for (const dump of dumps)
+        assert.ok(dump.includes("--skip-dump-masking-policies"));
     const content = readFileSync(dumpPath, "utf8");
     const parts = content.split(/(?=DUMP:)/).filter(Boolean);
     assert.equal(parts.length, 3, `expected 3 table dumps, got: ${content}`);
@@ -88,6 +106,7 @@ test("mysql per-table dump appends to the file instead of overwriting", async ()
 
 test("mysql restore sources a filtered dump file", async () => {
     resetDetection();
+    resetMysqlDumpFlags();
     calls.length = 0;
     sourcedSql = "";
     const dumpPath = join(mkdtempSync(join(tmpdir(), "mysql-restore-")), "database.sql");

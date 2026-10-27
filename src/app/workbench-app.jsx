@@ -40,7 +40,8 @@ export function WorkbenchApp() {
             if (!stale)
                 setState({ phase: "connecting", conn });
             try {
-                const session = await openSession(conn);
+                const database = window.muxy?.data?.database || "";
+                const session = await openSession(conn, database ? { database } : {});
                 session.coordinator = createWorkspaceCoordinator(session, { confirm: (options) => muxy.dialog.confirm(options) });
                 await session.coordinator.initiateCatalogLoad();
                 if (stale)
@@ -55,6 +56,19 @@ export function WorkbenchApp() {
             }
         })();
         return () => { stale = true; };
+    }, [connectionId]);
+
+    useEffect(() => {
+        if (!window.muxy || !connectionId)
+            return;
+        muxy.events?.subscribe?.("extension.datagrip.use-database", (payload) => {
+            if (payload?.connectionId !== connectionId || !payload.database)
+                return;
+            const session = sessionRef.current;
+            if (!session?.coordinator)
+                return;
+            session.coordinator.changeScope({ database: payload.database });
+        });
     }, [connectionId]);
 
     useEffect(() => {

@@ -17,8 +17,9 @@ export function hasDatabase(session) {
     return Boolean(currentDatabase(session));
 }
 
-export async function buildContext(conn) {
-    const ctx = { conn, database: conn.net?.database || "", schema: conn.engine === "postgres" ? "public" : "" };
+export async function buildContext(conn, options = {}) {
+    const database = options.database !== undefined ? options.database : (conn.net?.database || "");
+    const ctx = { conn, database, schema: conn.engine === "postgres" ? "public" : "" };
     if (conn.net) {
         let host = conn.net.host;
         let port = conn.net.port;
@@ -31,7 +32,7 @@ export async function buildContext(conn) {
     return ctx;
 }
 
-export async function openSession(conn) {
+export async function openSession(conn, options = {}) {
     const driver = getDriver(conn.engine);
     const detection = await driver.detect();
     if (!detection.available)
@@ -41,7 +42,7 @@ export async function openSession(conn) {
         if (!provided)
             throw new Error("A password is required to connect.");
     }
-    const ctx = await buildContext(conn);
+    const ctx = await buildContext(conn, options);
     const { serverVersion } = await driver.test(ctx);
     return {
         conn,

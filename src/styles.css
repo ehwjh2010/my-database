@@ -50,6 +50,7 @@
   --radius-card: 8px;
   --radius-sheet: 10px;
   --row-height: 28px;
+  --grid-gutter-width: 40px;
   --result-grid-max-height: 320px;
   --sheet-sm: 320px;
   --sheet-md: 460px;
@@ -505,6 +506,29 @@ textarea:focus {
 .field-complete .search-bar-input {
   width: auto;
   padding: 0 var(--s4) 0 var(--s2);
+}
+
+.column-select-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.column-select-value.is-all {
+  text-align: center;
+}
+
+.column-select-list {
+  min-width: 220px;
+}
+
+.query-separator-static {
+  pointer-events: none;
 }
 
 .field-complete-list {
@@ -1231,15 +1255,28 @@ textarea:focus {
   opacity: 0.7;
 }
 
+.grid-gutter-col {
+  width: var(--grid-gutter-width);
+  min-width: var(--grid-gutter-width);
+}
+
 .grid-table .gutter {
   position: sticky;
   left: 0;
   z-index: 1;
+  width: var(--grid-gutter-width);
+  min-width: var(--grid-gutter-width);
+  max-width: var(--grid-gutter-width);
+  height: var(--row-height);
+  min-height: var(--row-height);
+  max-height: var(--row-height);
+  padding: 0 var(--s2);
+  overflow: hidden;
   color: var(--muxy-foreground-muted);
   font-size: var(--font-caption);
+  line-height: calc(var(--row-height) - 1px);
   text-align: right;
   user-select: none;
-  min-width: var(--row-height);
   background-color: var(--muxy-background);
   background-image: linear-gradient(var(--muxy-surface), var(--muxy-surface));
 }
@@ -1439,6 +1476,45 @@ textarea:focus {
 .connection-row:hover {
   background: var(--muxy-hover);
   border: none;
+}
+
+.database-picker-context {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  height: var(--toolbar-height);
+  padding: 0 var(--s5);
+  border-bottom: 1px solid var(--muxy-border);
+  flex-shrink: 0;
+}
+
+.database-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  width: 100%;
+  min-height: var(--row-height);
+  padding: 0 var(--s5);
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: default;
+  text-align: left;
+}
+
+.database-row:hover {
+  background: var(--muxy-hover);
+}
+
+.database-row-panel {
+  border-radius: 0;
+}
+
+.database-row-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--muxy-foreground-muted);
 }
 
 .connection-actions {

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { cellDisplay, ColumnTooltip } from "./grid.jsx";
 import { gutterRowNumber } from "./page-size.js";
-import { frozenTableStyle, useFrozenColumnWidths } from "./sticky-header.js";
+import { alignFrozenWidths, frozenTableStyle, pinGutterWidth, useFrozenColumnWidths } from "./sticky-header.js";
 import { CellEditor } from "./cell-editor.jsx";
 import { ContextMenu } from "../ui/context-menu.jsx";
 import { InsertRows } from "./insert-rows.jsx";
@@ -27,12 +27,14 @@ function normalizeInput(value) {
     return String(value);
 }
 
-function Cols({ widths }) {
-    if (!widths?.length)
+function Cols({ widths, hasGutter }) {
+    const dataWidths = hasGutter ? widths?.slice(1) : widths;
+    if (!hasGutter && !dataWidths?.length)
         return null;
     return (
         <colgroup>
-            {widths.map((width, index) => (
+            {hasGutter ? <col className="grid-gutter-col" /> : null}
+            {dataWidths?.map((width, index) => (
                 <col key={index} style={{ width, minWidth: width }} />
             ))}
         </colgroup>
@@ -54,7 +56,8 @@ export function DataGrid({ page, pageIndex = 0, pageSize = 1, changes, editable,
     onPasteSelectionRef.current = onPasteSelection;
     const insertIds = (changes.model.inserts || []).map((insert) => insert.id);
     const selectionCtx = { columnCount: displayColumns.length, rowCount: displayRows.length, insertIds };
-    const colWidths = useFrozenColumnWidths(headTableRef, bodyTableRef, [displayColumns, displayRows, editable, editing]);
+    const measured = useFrozenColumnWidths(headTableRef, bodyTableRef, [displayColumns, displayRows, editable, editing]);
+    const colWidths = pinGutterWidth(alignFrozenWidths(measured, displayColumns.length + (editable ? 1 : 0)), editable);
     const tableStyle = frozenTableStyle(colWidths);
 
     const clearCollapseTimer = () => {
@@ -317,7 +320,7 @@ export function DataGrid({ page, pageIndex = 0, pageSize = 1, changes, editable,
         >
             <div className="grid-head-pin">
                 <table ref={headTableRef} className="grid-table data-grid-table" style={tableStyle}>
-                    <Cols widths={colWidths} />
+                    <Cols widths={colWidths} hasGutter={editable} />
                     <thead>
                         <tr>
                             {editable ? <th className="gutter" /> : null}
@@ -350,7 +353,7 @@ export function DataGrid({ page, pageIndex = 0, pageSize = 1, changes, editable,
                 </table>
             </div>
             <table ref={bodyTableRef} className="grid-table data-grid-table" style={tableStyle}>
-                <Cols widths={colWidths} />
+                <Cols widths={colWidths} hasGutter={editable} />
                 <tbody>
                     {displayRows.map((row, r) => {
                         const deleted = editable && isDeleted(changes.model, keyValuesFor(r));

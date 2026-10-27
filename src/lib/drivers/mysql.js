@@ -1,6 +1,7 @@
 import { run, runWithStdinFile } from "../exec.js";
 import { writeDumpPart, removeFile } from "../secure-file.js";
 import { writeFilteredMysqlDump } from "../mysql-dump-filter.js";
+import { mysqlDumpPrivilegeFlags } from "../mysql-dump-flags.js";
 import { detect as detectBinary, firstAvailable } from "../cli-detect.js";
 import { ensureMyCnfFile } from "../cred-file.js";
 import { quoteIdent, quoteLiteral } from "../sql/quote.js";
@@ -52,7 +53,7 @@ export function makeMysqlDriver(engine, binaries) {
         const credFile = await ensureMyCnfFile(ctx);
         return [
             binary, `--defaults-extra-file=${credFile}`,
-            "--batch", "--connect-timeout=10",
+            "--batch", "--connect-timeout=10", "--default-character-set=utf8mb4",
             "-h", ctx.endpoint?.host || net.host,
             "-P", String(ctx.endpoint?.port || net.port || 3306),
             "--protocol=TCP",
@@ -203,9 +204,12 @@ export function makeMysqlDriver(engine, binaries) {
             const net = ctx.conn.net;
             const credFile = await ensureMyCnfFile(ctx);
             const database = ctx.database || net.database;
+            const privilegeFlags = await mysqlDumpPrivilegeFlags(dumpBin);
             const baseArgv = (extra) => [
                 dumpBin, `--defaults-extra-file=${credFile}`, "--protocol=TCP",
                 "--single-transaction", "--set-gtid-purged=OFF",
+                "--default-character-set=utf8mb4",
+                ...privilegeFlags,
                 "-h", ctx.endpoint?.host || net.host,
                 "-P", String(ctx.endpoint?.port || net.port || 3306),
                 "-u", net.user,

@@ -167,7 +167,7 @@ export function useTablePage(session, tableRef, gridState, workspaceKey, dataRev
             setResult({ loading: false, error: error.message });
         });
         return () => { cancelled = true; };
-    }, [session, tableRef, gridState, workspaceKey, dataRevision, workspaceId]);
+    }, [session, tableRef, gridState.page, gridState.rawWhere, gridState.rawOrderBy, gridState.pageSize, workspaceKey, dataRevision, workspaceId]);
 
     return result;
 }
