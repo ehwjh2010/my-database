@@ -7,6 +7,7 @@ import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { isSqlBracketKey } from "../lib/sql-brackets.js";
 import { muxyTheme } from "./editor-theme.js";
+import { editorSelectAll } from "./select-all.js";
 import { sqlPhraseCompletionSource } from "./sql-completion.js";
 
 const DIALECTS = { postgres: PostgreSQL, mysql: MySQL, mariadb: MariaSQL, sqlite: SQLite };
@@ -262,6 +263,7 @@ export function createSqlEditor(parent, { engine, doc = "", schema = {}, executi
                     { key: "Tab", run: acceptCompletion },
                     indentWithTab,
                 ]),
+                ...editorSelectAll(),
                 schemaCompartment.of(sqlExtensions(engine, schema)),
                 muxyTheme(),
                 currentStatementBox,

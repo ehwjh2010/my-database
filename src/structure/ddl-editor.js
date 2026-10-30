@@ -4,6 +4,7 @@ import { defaultKeymap } from "@codemirror/commands";
 import { highlightSelectionMatches, SearchQuery, search, setSearchQuery } from "@codemirror/search";
 import { MariaSQL, MySQL, PostgreSQL, SQLite, sql } from "@codemirror/lang-sql";
 import { muxyTheme } from "../editor/editor-theme.js";
+import { editorSelectAll } from "../editor/select-all.js";
 import { matchRanges } from "./structure-search.js";
 
 const DIALECTS = { postgres: PostgreSQL, mysql: MySQL, mariadb: MariaSQL, sqlite: SQLite };
@@ -20,6 +21,7 @@ export function createDdlEditor(parent, { engine, doc = "" }) {
                 highlightSelectionMatches(),
                 search(),
                 keymap.of(defaultKeymap),
+                ...editorSelectAll(),
                 sql({ dialect: DIALECTS[engine] || SQLite }),
                 muxyTheme(),
                 EditorView.theme({
